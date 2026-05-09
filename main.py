@@ -8,7 +8,7 @@ from .provider import BoxliteSandboxProvider
 
 
 @register(
-    "astrbot-sandbox-boxlite",
+    "astrbot_sandbox_boxlite",
     "AstrBot Team",
     "Boxlite sandbox runtime provider for AstrBot",
     "0.1.0",

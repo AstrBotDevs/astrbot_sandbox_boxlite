@@ -1,4 +1,4 @@
-name: astrbot-sandbox-boxlite
+name: astrbot_sandbox_boxlite
 author: AstrBot Team
 desc: Boxlite sandbox runtime provider for AstrBot.
 version: 0.1.0
