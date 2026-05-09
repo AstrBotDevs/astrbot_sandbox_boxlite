@@ -1,0 +1,5 @@
+name: astrbot-sandbox-boxlite
+author: AstrBot Team
+desc: Boxlite sandbox runtime provider for AstrBot.
+version: 0.1.0
+repo: https://github.com/zouyonghe/astrbot_sandbox_boxlite
