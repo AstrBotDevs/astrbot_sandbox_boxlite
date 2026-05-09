@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any
 
 from astrbot.core.computer.booters.base import ComputerBooter
 from astrbot.core.star.context import Context
@@ -16,7 +17,15 @@ class BoxliteSandboxProvider:
     capabilities = {"shell", "python", "filesystem"}
     tool_names: set[str] = set()
 
-    def __init__(self, boot_hook: BootHook | None = None) -> None:
+    def __init__(
+        self,
+        boot_hook: BootHook | None = None,
+        *,
+        plugin_config: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.plugin_config: dict[str, Any] = (
+            dict(plugin_config) if plugin_config is not None else {}
+        )
         self._boot_hook = boot_hook
 
     def build_create_config(self, context: Context, session_id: str) -> dict:
@@ -40,7 +49,6 @@ class BoxliteSandboxProvider:
             return await self._boot_hook(context, session_id, sandbox_id, config)
         client = BoxliteBooter()
         await client.boot(uuid.uuid5(uuid.NAMESPACE_DNS, session_id).hex)
-        await client.sync_skills_to_sandbox()
         return client
 
     async def destroy_booter(self, booter: ComputerBooter, record: dict) -> None:
