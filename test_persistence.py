@@ -23,6 +23,22 @@ def test_boxlite_provider_connect_info_tracks_persistent_name(
     assert info["persistent_name"] == expected_persistent_name
 
 
+def test_boxlite_sandbox_provider_supports_persistent_reconnect():
+    assert provider_module.BoxliteSandboxProvider.supports_persistent_reconnect is True
+
+
+def test_boxlite_provider_update_connect_info_populates_legacy_persistent_name():
+    provider = provider_module.BoxliteSandboxProvider()
+
+    updated = provider.update_connect_info(
+        {"connect_info": {"name": "Legacy"}},
+        sandbox_name="Renamed",
+    )
+
+    assert updated["name"] == "Renamed"
+    assert updated["persistent_name"] == "Renamed"
+
+
 @pytest.mark.asyncio
 async def test_boxlite_provider_passes_persistent_reuse_flags(monkeypatch):
     recorded = {}
@@ -30,6 +46,7 @@ async def test_boxlite_provider_passes_persistent_reuse_flags(monkeypatch):
     class FakeBooter:
         def __init__(self, **kwargs):
             recorded.update(kwargs)
+            self.sandbox_id = kwargs.get("sandbox_id")
 
         async def boot(self, session_id: str):
             recorded["boot_session_id"] = session_id
@@ -46,6 +63,7 @@ async def test_boxlite_provider_passes_persistent_reuse_flags(monkeypatch):
 
     assert recorded["persistent"] is True
     assert recorded["persistent_name"] == "boxlite-1"
+    assert recorded["sandbox_id"] == "boxlite-1"
     assert getattr(booter, "sandbox_id") == "boxlite-1"
 
 
@@ -56,6 +74,7 @@ async def test_boxlite_provider_strips_explicit_persistent_name(monkeypatch):
     class FakeBooter:
         def __init__(self, **kwargs):
             recorded.update(kwargs)
+            self.sandbox_id = kwargs.get("sandbox_id")
 
         async def boot(self, session_id: str):
             recorded["boot_session_id"] = session_id
@@ -72,4 +91,5 @@ async def test_boxlite_provider_strips_explicit_persistent_name(monkeypatch):
 
     assert recorded["persistent"] is True
     assert recorded["persistent_name"] == "boxlite-2"
+    assert recorded["sandbox_id"] == "boxlite-1"
     assert getattr(booter, "sandbox_id") == "boxlite-1"

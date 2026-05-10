@@ -140,9 +140,11 @@ class BoxliteBooter(ComputerBooter):
         *,
         persistent: bool = False,
         persistent_name: str | None = None,
+        sandbox_id: str | None = None,
     ) -> None:
         self.persistent = persistent
         self.persistent_name = persistent_name
+        self.sandbox_id = sandbox_id
 
     async def boot(self, session_id: str) -> None:
         logger.info(

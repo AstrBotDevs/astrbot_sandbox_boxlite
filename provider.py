@@ -41,6 +41,9 @@ class BoxliteSandboxProvider:
     def update_connect_info(self, record: dict, *, sandbox_name: str) -> dict:
         connect_info = dict(record.get("connect_info") or {})
         connect_info["name"] = sandbox_name
+        connect_info["persistent_name"] = (
+            connect_info.get("persistent_name") or sandbox_name
+        )
         return connect_info
 
     def get_idle_timeout(self, context: Context, session_id: str) -> float:
@@ -54,9 +57,9 @@ class BoxliteSandboxProvider:
         client = BoxliteBooter(
             persistent=True,
             persistent_name=str(config.get("persistent_name") or sandbox_id).strip(),
+            sandbox_id=sandbox_id,
         )
         await client.boot(uuid.uuid5(uuid.NAMESPACE_DNS, session_id).hex)
-        setattr(client, "sandbox_id", sandbox_id)
         return client
 
     async def destroy_booter(self, booter: ComputerBooter, record: dict) -> None:
