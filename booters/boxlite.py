@@ -1,8 +1,9 @@
 import asyncio
 import random
 import signal
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from types import FrameType
 from typing import Any
 
 import aiohttp
@@ -25,11 +26,12 @@ from data.plugins.astrbot_sandbox_shipyard.booters.shipyard import (
 _HEALTH_PROBE_TIMEOUT = aiohttp.ClientTimeout(total=5)
 _HEALTH_PROBE_INTERVAL = 1
 _HEALTH_PROBE_MAX_ATTEMPTS = 60
+SignalHandler = Callable[[int, FrameType | None], Any] | int | None
 
 
 @contextmanager
-def capture_signal_handlers() -> Any:
-    handlers: dict[int, Any] = {}
+def capture_signal_handlers() -> Iterator[None]:
+    handlers: dict[int, SignalHandler] = {}
     for signum in (signal.SIGINT, signal.SIGTERM):
         handlers[signum] = signal.getsignal(signum)
     try:
@@ -38,15 +40,16 @@ def capture_signal_handlers() -> Any:
         _restore_signal_handlers(handlers)
 
 
-def _restore_signal_handlers(handlers: dict[int, Any]) -> None:
+def _restore_signal_handlers(handlers: dict[int, SignalHandler]) -> None:
     for signum, handler in handlers.items():
         try:
             signal.signal(signum, handler)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
             # signal.signal() is only valid from the main thread.
             logger.debug(
-                "Failed to restore BoxLite signal handler for signum=%s",
+                "Failed to restore BoxLite signal handler: signum=%s error_type=%s",
                 signum,
+                type(exc).__name__,
                 exc_info=True,
             )
 
