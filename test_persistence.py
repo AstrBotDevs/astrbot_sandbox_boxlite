@@ -93,3 +93,36 @@ async def test_boxlite_provider_strips_explicit_persistent_name(monkeypatch):
     assert recorded["persistent_name"] == "boxlite-2"
     assert recorded["sandbox_id"] == "boxlite-1"
     assert getattr(booter, "sandbox_id") == "boxlite-1"
+
+
+@pytest.mark.asyncio
+async def test_boxlite_provider_destroy_booter_prefers_destroy():
+    calls = []
+
+    class FakeBooter:
+        async def destroy(self):
+            calls.append("destroy")
+
+        async def shutdown(self):
+            calls.append("shutdown")
+
+    provider = provider_module.BoxliteSandboxProvider()
+
+    await provider.destroy_booter(FakeBooter(), {"retention_policy": "temporary"})
+
+    assert calls == ["destroy"]
+
+
+@pytest.mark.asyncio
+async def test_boxlite_provider_destroy_booter_falls_back_to_shutdown():
+    calls = []
+
+    class FakeBooter:
+        async def shutdown(self):
+            calls.append("shutdown")
+
+    provider = provider_module.BoxliteSandboxProvider()
+
+    await provider.destroy_booter(FakeBooter(), {"retention_policy": "temporary"})
+
+    assert calls == ["shutdown"]
