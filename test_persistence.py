@@ -191,7 +191,9 @@ async def test_boxlite_booter_available_uses_health_probe(monkeypatch):
     )
 
     booter = boxlite_booter.BoxliteBooter()
-    booter.mocked = boxlite_booter.MockShipyardSandboxClient("http://127.0.0.1:12345")
+    booter._sandbox_client = boxlite_booter.MockShipyardSandboxClient(
+        "http://127.0.0.1:12345"
+    )
 
     assert await booter.available() is True
     assert calls == ["http://127.0.0.1:12345"]
@@ -202,3 +204,38 @@ async def test_boxlite_booter_available_returns_false_before_boot():
     booter = boxlite_booter.BoxliteBooter()
 
     assert await booter.available() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_result", "expected_text", "expected_error"),
+    [
+        ({"output": "hello\n", "error": ""}, "hello\n", ""),
+        ({"stdout": "hello\n", "stderr": ""}, "hello\n", ""),
+        ({"data": {"output": "hello\n", "error": ""}}, "hello\n", ""),
+        (
+            {"data": {"output": {"text": "hello\n", "images": []}, "error": ""}},
+            "hello\n",
+            "",
+        ),
+        ({"output": "", "error": "boom"}, "", "boom"),
+    ],
+)
+async def test_boxlite_python_wrapper_normalizes_shipyard_results(
+    raw_result, expected_text, expected_error
+):
+    calls = []
+
+    class FakeShipyardPython:
+        async def exec(self, code, kernel_id=None, timeout=30, silent=False):
+            calls.append((code, kernel_id, timeout, silent))
+            return raw_result
+
+    wrapper = boxlite_booter.BoxlitePythonWrapper(FakeShipyardPython())
+
+    result = await wrapper.exec("print('hello')", timeout=5, silent=True)
+
+    assert calls == [("print('hello')", None, 5, True)]
+    assert result["data"]["output"]["text"] == expected_text
+    assert result["data"]["output"]["images"] == []
+    assert result["data"]["error"] == expected_error

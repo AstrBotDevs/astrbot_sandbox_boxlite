@@ -150,6 +150,41 @@ class MockShipyardSandboxClient:
             return False
 
 
+class BoxlitePythonWrapper:
+    def __init__(self, python: ShipyardPythonComponent) -> None:
+        self._python = python
+
+    async def exec(
+        self,
+        code: str,
+        kernel_id: str | None = None,
+        timeout: int = 30,
+        silent: bool = False,
+    ) -> dict[str, Any]:
+        result = await self._python.exec(
+            code, kernel_id=kernel_id, timeout=timeout, silent=silent
+        )
+        return _normalize_python_result(result)
+
+
+def _normalize_python_result(result: dict[str, Any]) -> dict[str, Any]:
+    data = result.get("data")
+    payload = data if isinstance(data, dict) else result
+    output = payload.get("output", payload.get("stdout", ""))
+    error = payload.get("error", payload.get("stderr", "")) or ""
+    images: list[dict[str, Any]] = []
+
+    if isinstance(output, dict):
+        images_value = output.get("images", [])
+        if isinstance(images_value, list):
+            images = images_value
+        text = output.get("text", output.get("stdout", "")) or ""
+    else:
+        text = output or ""
+
+    return {"data": {"output": {"text": text, "images": images}, "error": error}}
+
+
 class BoxliteBooter(ComputerBooter):
     def __init__(
         self,
@@ -162,7 +197,7 @@ class BoxliteBooter(ComputerBooter):
         self.persistent_name = persistent_name
         self.sandbox_id = sandbox_id
         self._sandbox_client: MockShipyardSandboxClient | None = None
-        self._python: ShipyardPythonComponent | None = None
+        self._python: BoxlitePythonWrapper | None = None
         self._shell: ShipyardShellComponent | None = None
         self._ship_fs: ShipyardFileSystemComponent | None = None
         self._fs: ShipyardFileSystemWrapper | None = None
@@ -193,10 +228,12 @@ class BoxliteBooter(ComputerBooter):
         self._sandbox_client = MockShipyardSandboxClient(
             sb_url=f"http://127.0.0.1:{random_port}"
         )
-        self._python = ShipyardPythonComponent(
-            client=self._sandbox_client,  # type: ignore
-            ship_id=self.box.id,
-            session_id=session_id,
+        self._python = BoxlitePythonWrapper(
+            ShipyardPythonComponent(
+                client=self._sandbox_client,  # type: ignore
+                ship_id=self.box.id,
+                session_id=session_id,
+            )
         )
         self._shell = ShipyardShellComponent(
             client=self._sandbox_client,  # type: ignore
