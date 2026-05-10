@@ -26,11 +26,24 @@ _HEALTH_PROBE_INTERVAL = 1
 _HEALTH_PROBE_MAX_ATTEMPTS = 60
 
 
+class SandboxClientError(Exception):
+    """Raised when a sandbox HTTP operation returns a non-2xx status."""
+
+    def __init__(
+        self, message: str, *, status: int | None = None, body: str = ""
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.body = body
+
+
 class MockShipyardSandboxClient:
     def __init__(self, sb_url: str) -> None:
         self.sb_url = sb_url.rstrip("/")
         connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
-        self._session: aiohttp.ClientSession = aiohttp.ClientSession(connector=connector)
+        self._session: aiohttp.ClientSession | None = aiohttp.ClientSession(
+            connector=connector
+        )
 
     @property
     def _client(self) -> aiohttp.ClientSession:
@@ -60,8 +73,10 @@ class MockShipyardSandboxClient:
                 return await response.json()
             else:
                 error_text = await response.text()
-                raise Exception(
-                    f"Failed to exec operation: {response.status} {error_text}"
+                raise SandboxClientError(
+                    f"Failed to exec operation: {response.status} {error_text}",
+                    status=response.status,
+                    body=error_text,
                 )
 
     async def upload_file(self, path: str, remote_path: str) -> dict:
@@ -132,20 +147,43 @@ class MockShipyardSandboxClient:
                 "message": "File upload failed",
             }
 
-    async def wait_healthy(self, ship_id: str) -> None:
-        """Wait until the sandbox health endpoint responds."""
-        for attempt in range(_HEALTH_PROBE_MAX_ATTEMPTS):
+    async def wait_healthy(
+        self,
+        ship_id: str,
+        *,
+        timeout: aiohttp.ClientTimeout | None = None,
+        interval: float | None = None,
+        max_attempts: int | None = None,
+    ) -> None:
+        """Wait until the sandbox health endpoint responds.
+
+        Args:
+            ship_id: Identifier used in log messages.
+            timeout: Per-request timeout for each probe. Defaults to
+                ``_HEALTH_PROBE_TIMEOUT``.
+            interval: Seconds to wait between probes. Defaults to
+                ``_HEALTH_PROBE_INTERVAL``.
+            max_attempts: Maximum probe attempts before giving up. Defaults to
+                ``_HEALTH_PROBE_MAX_ATTEMPTS``.
+        """
+        probe_timeout = timeout or _HEALTH_PROBE_TIMEOUT
+        probe_interval = interval if interval is not None else _HEALTH_PROBE_INTERVAL
+        probe_attempts = max_attempts if max_attempts is not None else _HEALTH_PROBE_MAX_ATTEMPTS
+
+        for attempt in range(probe_attempts):
             logger.info(f"Checking health for sandbox {ship_id} on {self.sb_url}...")
-            if await self.healthy():
+            if await self.healthy(timeout=probe_timeout):
                 logger.info(f"Sandbox {ship_id} is healthy")
                 return
-            await asyncio.sleep(_HEALTH_PROBE_INTERVAL)
+            await asyncio.sleep(probe_interval)
         raise RuntimeError(f"Sandbox {ship_id} health check timed out")
 
-    async def healthy(self) -> bool:
+    async def healthy(
+        self, *, timeout: aiohttp.ClientTimeout | None = None
+    ) -> bool:
         try:
             async with self._client.get(
-                f"{self.sb_url}/health", timeout=_HEALTH_PROBE_TIMEOUT
+                f"{self.sb_url}/health", timeout=timeout or _HEALTH_PROBE_TIMEOUT
             ) as response:
                 return response.status == 200
         except (aiohttp.ClientError, asyncio.TimeoutError):
