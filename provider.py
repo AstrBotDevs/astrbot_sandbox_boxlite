@@ -15,6 +15,7 @@ BootHook = Callable[[Context, str, str, dict], Awaitable[ComputerBooter]]
 class BoxliteSandboxProvider:
     provider_id = "boxlite"
     capabilities = {"shell", "python", "filesystem"}
+    supports_persistent_reconnect = True
     tool_names: set[str] = set()
 
     def __init__(
@@ -32,11 +33,17 @@ class BoxliteSandboxProvider:
         return {}
 
     def build_connect_info(self, sandbox_name: str, config: dict) -> dict:
-        return {"name": sandbox_name}
+        return {
+            "name": sandbox_name,
+            "persistent_name": config.get("persistent_name") or sandbox_name,
+        }
 
     def update_connect_info(self, record: dict, *, sandbox_name: str) -> dict:
         connect_info = dict(record.get("connect_info") or {})
         connect_info["name"] = sandbox_name
+        connect_info["persistent_name"] = (
+            connect_info.get("persistent_name") or sandbox_name
+        )
         return connect_info
 
     def get_idle_timeout(self, context: Context, session_id: str) -> float:
@@ -47,9 +54,17 @@ class BoxliteSandboxProvider:
     ) -> ComputerBooter:
         if self._boot_hook is not None:
             return await self._boot_hook(context, session_id, sandbox_id, config)
-        client = BoxliteBooter()
+        client = BoxliteBooter(
+            persistent=True,
+            persistent_name=str(config.get("persistent_name") or sandbox_id).strip(),
+            sandbox_id=sandbox_id,
+        )
         await client.boot(uuid.uuid5(uuid.NAMESPACE_DNS, session_id).hex)
         return client
 
     async def destroy_booter(self, booter: ComputerBooter, record: dict) -> None:
+        destroy = getattr(booter, "destroy", None)
+        if callable(destroy):
+            await destroy()
+            return
         await booter.shutdown()
