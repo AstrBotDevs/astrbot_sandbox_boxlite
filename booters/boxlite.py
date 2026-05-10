@@ -119,19 +119,22 @@ class MockShipyardSandboxClient:
         """Mock wait healthy"""
         loop = 60
         while loop > 0:
-            try:
-                logger.info(
-                    f"Checking health for sandbox {ship_id} on {self.sb_url}..."
-                )
-                url = f"{self.sb_url}/health"
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url) as response:
-                        if response.status == 200:
-                            logger.info(f"Sandbox {ship_id} is healthy")
+            logger.info(f"Checking health for sandbox {ship_id} on {self.sb_url}...")
+            if await self.healthy():
+                logger.info(f"Sandbox {ship_id} is healthy")
                 return
-            except Exception:
-                await asyncio.sleep(1)
-                loop -= 1
+            await asyncio.sleep(1)
+            loop -= 1
+        raise RuntimeError(f"Sandbox {ship_id} health check timed out")
+
+    async def healthy(self) -> bool:
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(f"{self.sb_url}/health") as response:
+                    return response.status == 200
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return False
 
 
 class BoxliteBooter(ComputerBooter):
@@ -203,6 +206,12 @@ class BoxliteBooter(ComputerBooter):
     async def destroy(self) -> None:
         logger.info(f"Destroying Boxlite booter for ship: {self.box.id}")
         await self.box.shutdown()
+
+    async def available(self) -> bool:
+        mocked = getattr(self, "mocked", None)
+        if mocked is None:
+            return False
+        return await mocked.healthy()
 
     @property
     def fs(self) -> FileSystemComponent:

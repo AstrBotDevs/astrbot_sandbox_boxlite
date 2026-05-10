@@ -173,3 +173,32 @@ async def test_boxlite_provider_reports_missing_persistent_box(monkeypatch):
     )
 
     assert exists is False
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_available_uses_health_probe(monkeypatch):
+    calls = []
+
+    async def fake_probe(self):
+        calls.append(self.sb_url)
+        return True
+
+    monkeypatch.setattr(
+        boxlite_booter.MockShipyardSandboxClient,
+        "healthy",
+        fake_probe,
+        raising=False,
+    )
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter.mocked = boxlite_booter.MockShipyardSandboxClient("http://127.0.0.1:12345")
+
+    assert await booter.available() is True
+    assert calls == ["http://127.0.0.1:12345"]
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_available_returns_false_before_boot():
+    booter = boxlite_booter.BoxliteBooter()
+
+    assert await booter.available() is False
