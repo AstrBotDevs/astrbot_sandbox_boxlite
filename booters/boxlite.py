@@ -23,6 +23,18 @@ from data.plugins.astrbot_sandbox_shipyard.booters.shipyard import (
 class MockShipyardSandboxClient:
     def __init__(self, sb_url: str) -> None:
         self.sb_url = sb_url.rstrip("/")
+        self._session: aiohttp.ClientSession | None = None
+
+    @property
+    def _client(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self) -> None:
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+            self._session = None
 
     async def _exec_operation(
         self,
@@ -130,9 +142,10 @@ class MockShipyardSandboxClient:
     async def healthy(self) -> bool:
         try:
             timeout = aiohttp.ClientTimeout(total=5)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(f"{self.sb_url}/health") as response:
-                    return response.status == 200
+            async with self._client.get(
+                f"{self.sb_url}/health", timeout=timeout
+            ) as response:
+                return response.status == 200
         except (aiohttp.ClientError, asyncio.TimeoutError):
             return False
 
@@ -148,6 +161,12 @@ class BoxliteBooter(ComputerBooter):
         self.persistent = persistent
         self.persistent_name = persistent_name
         self.sandbox_id = sandbox_id
+        self._sandbox_client: MockShipyardSandboxClient | None = None
+        self._python: ShipyardPythonComponent | None = None
+        self._shell: ShipyardShellComponent | None = None
+        self._ship_fs: ShipyardFileSystemComponent | None = None
+        self._fs: ShipyardFileSystemWrapper | None = None
+        self.box: boxlite.SimpleBox | None = None
 
     async def boot(self, session_id: str) -> None:
         logger.info(
@@ -171,21 +190,21 @@ class BoxliteBooter(ComputerBooter):
         )
         await self.box.start()
         logger.info(f"Boxlite booter started for session: {session_id}")
-        self.mocked = MockShipyardSandboxClient(
+        self._sandbox_client = MockShipyardSandboxClient(
             sb_url=f"http://127.0.0.1:{random_port}"
         )
         self._python = ShipyardPythonComponent(
-            client=self.mocked,  # type: ignore
+            client=self._sandbox_client,  # type: ignore
             ship_id=self.box.id,
             session_id=session_id,
         )
         self._shell = ShipyardShellComponent(
-            client=self.mocked,  # type: ignore
+            client=self._sandbox_client,  # type: ignore
             ship_id=self.box.id,
             session_id=session_id,
         )
         self._ship_fs = ShipyardFileSystemComponent(
-            client=self.mocked,  # type: ignore
+            client=self._sandbox_client,  # type: ignore
             ship_id=self.box.id,
             session_id=session_id,
         )
@@ -193,10 +212,12 @@ class BoxliteBooter(ComputerBooter):
             _shipyard_fs=self._ship_fs, _shipyard_shell=self._shell
         )
 
-        await self.mocked.wait_healthy(self.box.id, session_id)
+        await self._sandbox_client.wait_healthy(self.box.id, session_id)
 
     async def shutdown(self) -> None:
         logger.info(f"Shutting down Boxlite booter for ship: {self.box.id}")
+        if self._sandbox_client is not None:
+            await self._sandbox_client.close()
         if self.persistent:
             await self.box.__aexit__(None, None, None)
         else:
@@ -205,26 +226,35 @@ class BoxliteBooter(ComputerBooter):
 
     async def destroy(self) -> None:
         logger.info(f"Destroying Boxlite booter for ship: {self.box.id}")
+        if self._sandbox_client is not None:
+            await self._sandbox_client.close()
         await self.box.shutdown()
 
     async def available(self) -> bool:
-        mocked = getattr(self, "mocked", None)
-        if mocked is None:
+        if self._sandbox_client is None:
             return False
-        return await mocked.healthy()
+        return await self._sandbox_client.healthy()
 
     @property
     def fs(self) -> FileSystemComponent:
+        if self._fs is None:
+            raise RuntimeError("Boxlite booter has not been booted")
         return self._fs
 
     @property
     def python(self) -> PythonComponent:
+        if self._python is None:
+            raise RuntimeError("Boxlite booter has not been booted")
         return self._python
 
     @property
     def shell(self) -> ShellComponent:
+        if self._shell is None:
+            raise RuntimeError("Boxlite booter has not been booted")
         return self._shell
 
     async def upload_file(self, path: str, file_name: str) -> dict:
         """Upload file to sandbox"""
-        return await self.mocked.upload_file(path, file_name)
+        if self._sandbox_client is None:
+            raise RuntimeError("Boxlite booter has not been booted")
+        return await self._sandbox_client.upload_file(path, file_name)
