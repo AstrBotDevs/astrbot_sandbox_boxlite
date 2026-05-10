@@ -239,3 +239,49 @@ async def test_boxlite_python_wrapper_normalizes_shipyard_results(
     assert result["data"]["output"]["text"] == expected_text
     assert result["data"]["output"]["images"] == []
     assert result["data"]["error"] == expected_error
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_shutdown_closes_sandbox_client():
+    close_calls = []
+
+    class FakeBox:
+        id = "fake-box"
+
+        async def shutdown(self):
+            pass
+
+    class FakeClient:
+        async def close(self):
+            close_calls.append("close")
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter.box = FakeBox()
+    booter._sandbox_client = FakeClient()
+
+    await booter.shutdown()
+
+    assert close_calls == ["close"]
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_destroy_closes_sandbox_client():
+    close_calls = []
+
+    class FakeBox:
+        id = "fake-box"
+
+        async def shutdown(self):
+            pass
+
+    class FakeClient:
+        async def close(self):
+            close_calls.append("close")
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter.box = FakeBox()
+    booter._sandbox_client = FakeClient()
+
+    await booter.destroy()
+
+    assert close_calls == ["close"]

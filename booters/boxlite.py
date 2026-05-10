@@ -20,9 +20,6 @@ from data.plugins.astrbot_sandbox_shipyard.booters.shipyard import (
 )
 
 
-_DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=30)
-
-
 class MockShipyardSandboxClient:
     def __init__(
         self,
@@ -32,19 +29,22 @@ class MockShipyardSandboxClient:
     ) -> None:
         self.sb_url = sb_url.rstrip("/")
         self._session = session
+        self._owns_session = session is None
+        self._init_lock = asyncio.Lock()
 
-    @property
-    def _client(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
+    async def _client(self) -> aiohttp.ClientSession:
+        if self._session is not None and not self._session.closed:
+            return self._session
+        async with self._init_lock:
+            if self._session is not None and not self._session.closed:
+                return self._session
             connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
-            self._session = aiohttp.ClientSession(
-                connector=connector,
-                timeout=_DEFAULT_TIMEOUT,
-            )
+            self._session = aiohttp.ClientSession(connector=connector)
+            self._owns_session = True
         return self._session
 
     async def close(self) -> None:
-        if self._session is not None and not self._session.closed:
+        if self._owns_session and self._session is not None and not self._session.closed:
             await self._session.close()
             self._session = None
 
@@ -56,7 +56,8 @@ class MockShipyardSandboxClient:
         session_id: str,
     ) -> dict[str, Any]:
         headers = {"X-SESSION-ID": session_id}
-        async with self._client.post(
+        client = await self._client()
+        async with client.post(
             f"{self.sb_url}/{operation_type}",
             json=payload,
             headers=headers,
@@ -90,7 +91,8 @@ class MockShipyardSandboxClient:
 
             timeout = aiohttp.ClientTimeout(total=120)  # 2 minutes for file upload
 
-            async with self._client.post(url, data=data, timeout=timeout) as response:
+            client = await self._client()
+            async with client.post(url, data=data, timeout=timeout) as response:
                 if response.status == 200:
                     logger.info(
                         "[Computer] File uploaded to Boxlite sandbox: %s",
@@ -152,7 +154,8 @@ class MockShipyardSandboxClient:
     async def healthy(self) -> bool:
         try:
             timeout = aiohttp.ClientTimeout(total=5)
-            async with self._client.get(
+            client = await self._client()
+            async with client.get(
                 f"{self.sb_url}/health", timeout=timeout
             ) as response:
                 return response.status == 200
@@ -160,7 +163,7 @@ class MockShipyardSandboxClient:
             return False
 
 
-class BoxlitePythonWrapper:
+class BoxlitePythonWrapper(PythonComponent):
     def __init__(self, python: ShipyardPythonComponent) -> None:
         self._python = python
 
@@ -207,7 +210,7 @@ class BoxliteBooter(ComputerBooter):
         self.persistent_name = persistent_name
         self.sandbox_id = sandbox_id
         self._sandbox_client: MockShipyardSandboxClient | None = None
-        self._python: ShipyardPythonComponent | None = None
+        self._python: BoxlitePythonWrapper | None = None
         self._shell: ShipyardShellComponent | None = None
         self._ship_fs: ShipyardFileSystemComponent | None = None
         self._fs: ShipyardFileSystemWrapper | None = None
