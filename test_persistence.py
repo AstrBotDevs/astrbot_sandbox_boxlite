@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from data.plugins.astrbot_sandbox_boxlite import main as plugin_main
 from data.plugins.astrbot_sandbox_boxlite import provider as provider_module
 from data.plugins.astrbot_sandbox_boxlite.booters import boxlite as boxlite_booter
 
@@ -255,6 +256,52 @@ async def test_boxlite_boot_restores_process_signal_handlers(monkeypatch):
     await booter.boot("session-1")
 
     assert active == original
+
+
+def test_restore_signal_handlers_logs_failures(monkeypatch):
+    calls = []
+
+    def fake_signal(*args, **kwargs):
+        raise ValueError("no signal")
+
+    def fake_debug(message, *args, **kwargs):
+        calls.append((message, args, kwargs))
+
+    monkeypatch.setattr(boxlite_booter.signal, "signal", fake_signal)
+    monkeypatch.setattr(boxlite_booter.logger, "debug", fake_debug)
+
+    boxlite_booter._restore_signal_handlers({boxlite_booter.signal.SIGINT: object()})
+
+    assert calls
+    assert "Failed to restore BoxLite signal handler" in calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_boxlite_terminate_detaches_even_if_cleanup_fails(monkeypatch):
+    calls = []
+
+    class FakeProvider:
+        provider_id = "boxlite"
+
+    async def fake_cleanup(provider_id):
+        calls.append(("cleanup", provider_id))
+        raise RuntimeError("cleanup failed")
+
+    def fake_detach(provider_id):
+        calls.append(("detach", provider_id))
+
+    monkeypatch.setattr(plugin_main, "cleanup_sandbox_provider", fake_cleanup)
+    monkeypatch.setattr(plugin_main, "detach_sandbox_provider", fake_detach)
+
+    plugin = plugin_main.BoxliteSandboxRuntimePlugin.__new__(
+        plugin_main.BoxliteSandboxRuntimePlugin
+    )
+    plugin.provider = FakeProvider()
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await plugin.terminate()
+
+    assert calls == [("cleanup", "boxlite"), ("detach", "boxlite")]
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@ import asyncio
 import random
 import signal
 from collections.abc import Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import aiohttp
@@ -26,11 +27,15 @@ _HEALTH_PROBE_INTERVAL = 1
 _HEALTH_PROBE_MAX_ATTEMPTS = 60
 
 
-def _capture_signal_handlers() -> dict[int, Any]:
+@contextmanager
+def capture_signal_handlers() -> Any:
     handlers: dict[int, Any] = {}
     for signum in (signal.SIGINT, signal.SIGTERM):
         handlers[signum] = signal.getsignal(signum)
-    return handlers
+    try:
+        yield
+    finally:
+        _restore_signal_handlers(handlers)
 
 
 def _restore_signal_handlers(handlers: dict[int, Any]) -> None:
@@ -39,7 +44,11 @@ def _restore_signal_handlers(handlers: dict[int, Any]) -> None:
             signal.signal(signum, handler)
         except (OSError, ValueError):
             # signal.signal() is only valid from the main thread.
-            pass
+            logger.debug(
+                "Failed to restore BoxLite signal handler for signum=%s",
+                signum,
+                exc_info=True,
+            )
 
 
 class SandboxClientError(Exception):
@@ -279,8 +288,7 @@ class BoxliteBooter(ComputerBooter):
         )
         random_port = random.randint(20000, 30000)
         box_name = self.persistent_name if self.persistent else None
-        signal_handlers = _capture_signal_handlers()
-        try:
+        with capture_signal_handlers():
             self.box = boxlite.SimpleBox(
                 image="soulter/shipyard-ship",
                 name=box_name,
@@ -296,8 +304,6 @@ class BoxliteBooter(ComputerBooter):
                 ],
             )
             await self.box.start()
-        finally:
-            _restore_signal_handlers(signal_handlers)
         logger.info(f"Boxlite booter started for session: {session_id}")
         self._sandbox_client = MockShipyardSandboxClient(
             sb_url=f"http://127.0.0.1:{random_port}"
