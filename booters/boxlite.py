@@ -44,12 +44,11 @@ def _restore_signal_handlers(handlers: dict[int, SignalHandler]) -> None:
     for signum, handler in handlers.items():
         try:
             signal.signal(signum, handler)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError):
             # signal.signal() is only valid from the main thread.
             logger.debug(
-                "Failed to restore BoxLite signal handler: signum=%s error_type=%s",
+                "Failed to restore BoxLite signal handler for signum=%s",
                 signum,
-                type(exc).__name__,
                 exc_info=True,
             )
 

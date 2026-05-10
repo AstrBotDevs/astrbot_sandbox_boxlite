@@ -275,7 +275,6 @@ def test_restore_signal_handlers_logs_failures(monkeypatch):
     assert calls
     assert "Failed to restore BoxLite signal handler" in calls[0][0]
     assert calls[0][1][0] == boxlite_booter.signal.SIGINT
-    assert calls[0][1][1] == "ValueError"
 
 
 @pytest.mark.asyncio
