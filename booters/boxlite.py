@@ -20,31 +20,26 @@ from data.plugins.astrbot_sandbox_shipyard.booters.shipyard import (
 )
 
 
+_HEALTH_PROBE_TIMEOUT = aiohttp.ClientTimeout(total=5)
+_HEALTH_PROBE_INTERVAL = 1
+_HEALTH_PROBE_MAX_ATTEMPTS = 60
+
+
 class MockShipyardSandboxClient:
-    def __init__(
-        self,
-        sb_url: str,
-        *,
-        session: aiohttp.ClientSession | None = None,
-    ) -> None:
+    def __init__(self, sb_url: str) -> None:
         self.sb_url = sb_url.rstrip("/")
-        self._session = session
-        self._owns_session = session is None
-        self._init_lock = asyncio.Lock()
+        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+        self._session = aiohttp.ClientSession(connector=connector)
 
     async def _client(self) -> aiohttp.ClientSession:
         if self._session is not None and not self._session.closed:
             return self._session
-        async with self._init_lock:
-            if self._session is not None and not self._session.closed:
-                return self._session
-            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
-            self._session = aiohttp.ClientSession(connector=connector)
-            self._owns_session = True
+        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+        self._session = aiohttp.ClientSession(connector=connector)
         return self._session
 
     async def close(self) -> None:
-        if self._owns_session and self._session is not None and not self._session.closed:
+        if self._session is not None and not self._session.closed:
             await self._session.close()
             self._session = None
 
@@ -140,23 +135,20 @@ class MockShipyardSandboxClient:
             }
 
     async def wait_healthy(self, ship_id: str, session_id: str) -> None:
-        """Mock wait healthy"""
-        loop = 60
-        while loop > 0:
+        """Wait until the sandbox health endpoint responds."""
+        for attempt in range(_HEALTH_PROBE_MAX_ATTEMPTS):
             logger.info(f"Checking health for sandbox {ship_id} on {self.sb_url}...")
             if await self.healthy():
                 logger.info(f"Sandbox {ship_id} is healthy")
                 return
-            await asyncio.sleep(1)
-            loop -= 1
+            await asyncio.sleep(_HEALTH_PROBE_INTERVAL)
         raise RuntimeError(f"Sandbox {ship_id} health check timed out")
 
     async def healthy(self) -> bool:
         try:
-            timeout = aiohttp.ClientTimeout(total=5)
             client = await self._client()
             async with client.get(
-                f"{self.sb_url}/health", timeout=timeout
+                f"{self.sb_url}/health", timeout=_HEALTH_PROBE_TIMEOUT
             ) as response:
                 return response.status == 200
         except (aiohttp.ClientError, asyncio.TimeoutError):
@@ -285,6 +277,9 @@ class BoxliteBooter(ComputerBooter):
         hook so state can be preserved.  For temporary sandboxes
         this performs a regular shutdown.
         """
+        if self.box is None:
+            logger.warning("Boxlite booter shutdown called before boot")
+            return
         logger.info(f"Shutting down Boxlite booter for ship: {self.box.id}")
         await self._close_client()
         if self.persistent:
@@ -295,6 +290,9 @@ class BoxliteBooter(ComputerBooter):
 
     async def destroy(self) -> None:
         """Forcefully destroy the booter without preserving state."""
+        if self.box is None:
+            logger.warning("Boxlite booter destroy called before boot")
+            return
         logger.info(f"Destroying Boxlite booter for ship: {self.box.id}")
         await self._close_client()
         await self.box.shutdown()
