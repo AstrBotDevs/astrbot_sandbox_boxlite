@@ -14,7 +14,7 @@ from .provider import BoxliteSandboxProvider
 @register(
     "astrbot_sandbox_boxlite",
     "AstrBot Team",
-    "Boxlite sandbox runtime provider for AstrBot",
+    "为 AstrBot 提供 Boxlite 本地沙盒运行时。",
     "0.1.0",
 )
 class BoxliteSandboxRuntimePlugin(Star):
