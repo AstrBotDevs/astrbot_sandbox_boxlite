@@ -35,18 +35,12 @@ git clone https://github.com/zouyonghe/astrbot_sandbox_shipyard.git data/plugins
 
 ### 启用 BoxLite 沙盒驱动
 
-先在 AstrBot 核心配置中启用沙盒模式，并把沙盒驱动设置为 `boxlite`：
+在 AstrBot 仪表盘中启用沙盒模式，并选择 `boxlite` 驱动。
 
-```json
-{
-  "provider_settings": {
-    "computer_use_runtime": "sandbox",
-    "sandbox": {
-      "booter": "boxlite"
-    }
-  }
-}
-```
+对应配置路径：
+
+- `provider_settings.computer_use_runtime`：`sandbox`
+- `provider_settings.sandbox.booter`：`boxlite`
 
 ## 配置项
 
@@ -67,6 +61,7 @@ git clone https://github.com/zouyonghe/astrbot_sandbox_shipyard.git data/plugins
 - 不包含浏览器自动化能力。
 - 不包含 GUI 工具能力。
 
-## 仓库地址
+## 排查建议
 
-- GitHub: https://github.com/zouyonghe/astrbot_sandbox_boxlite
+- 如果 BoxLite 无法加载，请确认本地仍然保留 Shipyard 插件目录。
+- 如果文件操作行为异常，请确认 AstrBot 环境中已经安装了共享的 Shipyard 兼容依赖。

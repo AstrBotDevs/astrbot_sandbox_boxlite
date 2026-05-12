@@ -35,22 +35,16 @@ Then restart AstrBot, or reload plugins from the plugin management page.
 
 ### Enable the BoxLite Sandbox Driver
 
-Enable sandbox mode in AstrBot and select the `boxlite` sandbox driver:
+In the AstrBot dashboard, enable sandbox mode and select the `boxlite` driver.
 
-```json
-{
-  "provider_settings": {
-    "computer_use_runtime": "sandbox",
-    "sandbox": {
-      "booter": "boxlite"
-    }
-  }
-}
-```
+Configuration path:
+
+- `provider_settings.computer_use_runtime`: `sandbox`
+- `provider_settings.sandbox.booter`: `boxlite`
 
 ## Configuration
 
-This plugin does not currently expose driver-specific configuration fields.
+This plugin does not expose driver-specific configuration fields.
 
 ## Best For
 
@@ -67,6 +61,7 @@ This plugin does not currently expose driver-specific configuration fields.
 - Browser automation is not included.
 - GUI-specific tools are not included.
 
-## Repository
+## Troubleshooting
 
-- GitHub: https://github.com/zouyonghe/astrbot_sandbox_boxlite
+- If BoxLite fails to load, make sure the Shipyard plugin tree is still present locally.
+- If file operations behave unexpectedly, verify that the shared Shipyard-compatible dependency is installed in the AstrBot environment.

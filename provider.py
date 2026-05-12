@@ -30,20 +30,24 @@ class BoxliteSandboxProvider:
         )
         self._boot_hook = boot_hook
 
+    @staticmethod
+    def _persistent_name(config: dict, fallback: str) -> str:
+        return str(config.get("persistent_name") or fallback).strip()
+
     def build_create_config(self, context: Context, session_id: str) -> dict:
         return {}
 
     def build_connect_info(self, sandbox_name: str, config: dict) -> dict:
         return {
             "name": sandbox_name,
-            "persistent_name": config.get("persistent_name") or sandbox_name,
+            "persistent_name": self._persistent_name(config, sandbox_name),
         }
 
     def update_connect_info(self, record: dict, *, sandbox_name: str) -> dict:
         connect_info = dict(record.get("connect_info") or {})
         connect_info["name"] = sandbox_name
-        connect_info["persistent_name"] = (
-            connect_info.get("persistent_name") or sandbox_name
+        connect_info["persistent_name"] = self._persistent_name(
+            connect_info, sandbox_name
         )
         return connect_info
 
@@ -70,7 +74,7 @@ class BoxliteSandboxProvider:
             return await self._boot_hook(context, session_id, sandbox_id, config)
         client = BoxliteBooter(
             persistent=True,
-            persistent_name=str(config.get("persistent_name") or sandbox_id).strip(),
+            persistent_name=self._persistent_name(config, sandbox_id),
             sandbox_id=sandbox_id,
         )
         await client.boot(uuid.uuid5(uuid.NAMESPACE_DNS, session_id).hex)
