@@ -67,6 +67,11 @@ git clone https://github.com/zouyonghe/astrbot_sandbox_shipyard.git data/plugins
 - 不包含浏览器自动化能力。
 - 不包含 GUI 工具能力。
 
+## 排查建议
+
+- 如果 BoxLite 无法加载，请确认本地仍然保留 Shipyard 插件目录。
+- 如果文件操作行为异常，请确认 AstrBot 环境中已经安装了共享的 Shipyard 兼容依赖。
+
 ## 仓库地址
 
 - GitHub: https://github.com/zouyonghe/astrbot_sandbox_boxlite
