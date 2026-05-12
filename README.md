@@ -71,7 +71,3 @@ This plugin does not expose driver-specific configuration fields.
 
 - If BoxLite fails to load, make sure the Shipyard plugin tree is still present locally.
 - If file operations behave unexpectedly, verify that the shared Shipyard-compatible dependency is installed in the AstrBot environment.
-
-## Repository
-
-- GitHub: https://github.com/zouyonghe/astrbot_sandbox_boxlite
