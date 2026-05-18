@@ -40,14 +40,18 @@ class BoxliteSandboxProvider:
     def build_connect_info(self, sandbox_name: str, config: dict) -> dict:
         return {
             "name": sandbox_name,
-            "persistent_name": self._persistent_name(config, sandbox_name),
+            "persistent_name": self._persistent_name(
+                config,
+                str(config.get("sandbox_id") or sandbox_name),
+            ),
         }
 
     def update_connect_info(self, record: dict, *, sandbox_name: str) -> dict:
         connect_info = dict(record.get("connect_info") or {})
         connect_info["name"] = sandbox_name
-        connect_info["persistent_name"] = self._persistent_name(
-            connect_info, sandbox_name
+        connect_info.setdefault(
+            "persistent_name",
+            str(record.get("sandbox_id") or sandbox_name).strip(),
         )
         return connect_info
 
@@ -75,6 +79,7 @@ class BoxliteSandboxProvider:
         client = BoxliteBooter(
             persistent=True,
             persistent_name=self._persistent_name(config, sandbox_id),
+            resume=bool(config.get("resume", False)),
             sandbox_id=sandbox_id,
         )
         await client.boot(uuid.uuid5(uuid.NAMESPACE_DNS, session_id).hex)

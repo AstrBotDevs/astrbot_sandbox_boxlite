@@ -475,10 +475,12 @@ class BoxliteBooter(ComputerBooter):
         *,
         persistent: bool = False,
         persistent_name: str | None = None,
+        resume: bool = False,
         sandbox_id: str | None = None,
     ) -> None:
         self.persistent = persistent
         self.persistent_name = persistent_name
+        self.resume = resume
         self.sandbox_id = sandbox_id
         self._sandbox_client: MockShipyardSandboxClient | None = None
         self._python: BoxlitePythonWrapper | None = None
@@ -503,9 +505,15 @@ class BoxliteBooter(ComputerBooter):
         )
         random_port = random.randint(20000, 30000)
         box_name = self.persistent_name if self.persistent else None
+        runtime = boxlite.Boxlite.default()
+        if self.resume and box_name and runtime.get_info(box_name) is None:
+            raise RuntimeError(
+                f"Boxlite persistent sandbox {box_name!r} could not be resumed"
+            )
         with capture_signal_handlers():
             self.box = boxlite.SimpleBox(
                 image="soulter/shipyard-ship",
+                runtime=runtime,
                 name=box_name,
                 auto_remove=not self.persistent,
                 reuse_existing=self.persistent,

@@ -12,6 +12,7 @@ from data.plugins.astrbot_sandbox_boxlite.booters import boxlite as boxlite_boot
     [
         ("Named", {"persistent_name": "boxlite-1"}, "boxlite-1"),
         ("Named", {}, "Named"),
+        ("Named", {"sandbox_id": "boxlite-1"}, "boxlite-1"),
     ],
 )
 def test_boxlite_provider_connect_info_tracks_persistent_name(
@@ -51,12 +52,12 @@ def test_boxlite_provider_update_connect_info_populates_legacy_persistent_name()
     provider = provider_module.BoxliteSandboxProvider()
 
     updated = provider.update_connect_info(
-        {"connect_info": {"name": "Legacy"}},
+        {"sandbox_id": "boxlite-1", "connect_info": {"name": "Legacy"}},
         sandbox_name="Renamed",
     )
 
     assert updated["name"] == "Renamed"
-    assert updated["persistent_name"] == "Renamed"
+    assert updated["persistent_name"] == "boxlite-1"
 
 
 @pytest.mark.asyncio
@@ -83,6 +84,7 @@ async def test_boxlite_provider_passes_persistent_reuse_flags(monkeypatch):
 
     assert recorded["persistent"] is True
     assert recorded["persistent_name"] == "boxlite-1"
+    assert recorded["resume"] is False
     assert recorded["sandbox_id"] == "boxlite-1"
     assert getattr(booter, "sandbox_id") == "boxlite-1"
 
@@ -111,6 +113,7 @@ async def test_boxlite_provider_strips_explicit_persistent_name(monkeypatch):
 
     assert recorded["persistent"] is True
     assert recorded["persistent_name"] == "boxlite-2"
+    assert recorded["resume"] is True
     assert recorded["sandbox_id"] == "boxlite-1"
     assert getattr(booter, "sandbox_id") == "boxlite-1"
 
@@ -240,6 +243,10 @@ async def test_boxlite_boot_restores_process_signal_handlers(monkeypatch):
     def fake_signal(signum, handler):
         active[signum] = handler
 
+    class FakeRuntime:
+        def get_info(self, name):
+            return {"name": name}
+
     class FakeSimpleBox:
         id = "fake-box"
 
@@ -256,6 +263,11 @@ async def test_boxlite_boot_restores_process_signal_handlers(monkeypatch):
 
     monkeypatch.setattr(boxlite_booter.signal, "getsignal", fake_getsignal)
     monkeypatch.setattr(boxlite_booter.signal, "signal", fake_signal)
+    monkeypatch.setattr(
+        boxlite_booter.boxlite,
+        "Boxlite",
+        SimpleNamespace(default=lambda: FakeRuntime()),
+    )
     monkeypatch.setattr(boxlite_booter.boxlite, "SimpleBox", FakeSimpleBox)
     monkeypatch.setattr(
         boxlite_booter.MockShipyardSandboxClient,
@@ -276,6 +288,33 @@ async def test_boxlite_boot_restores_process_signal_handlers(monkeypatch):
     await booter.boot("session-1")
 
     assert active == original
+
+
+@pytest.mark.asyncio
+async def test_boxlite_restore_does_not_create_when_persistent_box_missing(monkeypatch):
+    class FakeRuntime:
+        def get_info(self, name):
+            return None
+
+    class FakeSimpleBox:
+        def __init__(self, **kwargs):
+            raise AssertionError("resume path must not create a new box")
+
+    monkeypatch.setattr(
+        boxlite_booter.boxlite,
+        "Boxlite",
+        SimpleNamespace(default=lambda: FakeRuntime()),
+    )
+    monkeypatch.setattr(boxlite_booter.boxlite, "SimpleBox", FakeSimpleBox)
+
+    booter = boxlite_booter.BoxliteBooter(
+        persistent=True,
+        persistent_name="boxlite-1",
+        resume=True,
+    )
+
+    with pytest.raises(RuntimeError, match="could not be resumed"):
+        await booter.boot("session-1")
 
 
 def test_restore_signal_handlers_logs_failures(monkeypatch):
