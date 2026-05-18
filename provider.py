@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
@@ -9,7 +8,7 @@ from astrbot.core.computer.booters.base import ComputerBooter
 from astrbot.core.star.context import Context
 
 from .booters import boxlite as boxlite_booter
-from .booters.boxlite import BoxliteBooter
+from .booters.boxlite import BoxliteBooter, allocate_boxlite_host_port
 
 BootHook = Callable[[Context, str, str, dict], Awaitable[ComputerBooter]]
 
@@ -36,7 +35,7 @@ class BoxliteSandboxProvider:
         return str(config.get("persistent_name") or fallback).strip()
 
     def build_create_config(self, context: Context, session_id: str) -> dict:
-        return {"host_port": random.randint(20000, 30000)}
+        return {"host_port": allocate_boxlite_host_port()}
 
     def build_connect_info(self, sandbox_name: str, config: dict) -> dict:
         return {
@@ -45,7 +44,7 @@ class BoxliteSandboxProvider:
                 config,
                 str(config.get("sandbox_id") or sandbox_name),
             ),
-            "host_port": int(config.get("host_port") or random.randint(20000, 30000)),
+            "host_port": int(config.get("host_port") or allocate_boxlite_host_port()),
         }
 
     def update_connect_info(self, record: dict, *, sandbox_name: str) -> dict:

@@ -27,7 +27,13 @@ _HEALTH_PROBE_TIMEOUT = aiohttp.ClientTimeout(total=5)
 _HEALTH_PROBE_INTERVAL = 1
 _HEALTH_PROBE_MAX_ATTEMPTS = 60
 _MAX_SEARCH_LINE_COLUMNS = 1000
+BOXLITE_HOST_PORT_MIN = 20000
+BOXLITE_HOST_PORT_MAX = 30000
 SignalHandler = Callable[[int, FrameType | None], Any] | int | None
+
+
+def allocate_boxlite_host_port() -> int:
+    return random.randint(BOXLITE_HOST_PORT_MIN, BOXLITE_HOST_PORT_MAX)
 
 
 @contextmanager
@@ -545,7 +551,11 @@ class BoxliteBooter(ComputerBooter):
         logger.info(
             f"Booting(Boxlite) for session: {session_id}, this may take a while..."
         )
-        random_port = self.host_port or random.randint(20000, 30000)
+        if self.resume and self.host_port is None:
+            raise RuntimeError(
+                "Boxlite persistent sandbox cannot be resumed without a stored host_port"
+            )
+        random_port = self.host_port or allocate_boxlite_host_port()
         self.host_port = random_port
         box_name = self.persistent_name if self.persistent else None
         runtime = boxlite.Boxlite.default()
@@ -598,8 +608,14 @@ class BoxliteBooter(ComputerBooter):
             )
 
             await self._sandbox_client.wait_healthy(self.box.id)
-        except BaseException:
-            await self._cleanup_failed_boot()
+        except Exception:
+            try:
+                await self._cleanup_failed_boot()
+            except Exception:
+                logger.warning(
+                    "Failed to cleanup Boxlite sandbox after boot error",
+                    exc_info=True,
+                )
             raise
 
     async def _cleanup_failed_boot(self) -> None:

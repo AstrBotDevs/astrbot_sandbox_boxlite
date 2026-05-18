@@ -389,9 +389,22 @@ async def test_boxlite_restore_does_not_create_when_persistent_box_missing(monke
         persistent=True,
         persistent_name="boxlite-1",
         resume=True,
+        host_port=23456,
     )
 
     with pytest.raises(RuntimeError, match="could not be resumed"):
+        await booter.boot("session-1")
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_rejects_resume_without_host_port():
+    booter = boxlite_booter.BoxliteBooter(
+        persistent=True,
+        persistent_name="boxlite-1",
+        resume=True,
+    )
+
+    with pytest.raises(RuntimeError, match="without a stored host_port"):
         await booter.boot("session-1")
 
 
