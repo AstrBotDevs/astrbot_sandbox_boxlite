@@ -7,7 +7,8 @@ from typing import Any
 from astrbot.core.computer.booters.base import ComputerBooter
 from astrbot.core.star.context import Context
 
-from .booters.boxlite import BoxliteBooter
+from .booters import boxlite as boxlite_booter
+from .booters.boxlite import BoxliteBooter, allocate_boxlite_host_port
 
 BootHook = Callable[[Context, str, str, dict], Awaitable[ComputerBooter]]
 
@@ -15,6 +16,7 @@ BootHook = Callable[[Context, str, str, dict], Awaitable[ComputerBooter]]
 class BoxliteSandboxProvider:
     provider_id = "boxlite"
     capabilities = {"shell", "python", "filesystem"}
+    supports_persistent_reconnect = True
     tool_names: set[str] = set()
 
     def __init__(
@@ -28,28 +30,81 @@ class BoxliteSandboxProvider:
         )
         self._boot_hook = boot_hook
 
+    @staticmethod
+    def _persistent_name(config: dict, fallback: str) -> str:
+        return str(config.get("persistent_name") or fallback).strip()
+
     def build_create_config(self, context: Context, session_id: str) -> dict:
-        return {}
+        return {"host_port": allocate_boxlite_host_port()}
 
     def build_connect_info(self, sandbox_name: str, config: dict) -> dict:
-        return {"name": sandbox_name}
+        return {
+            "name": sandbox_name,
+            "persistent_name": self._persistent_name(
+                config,
+                str(config.get("sandbox_id") or sandbox_name),
+            ),
+            "host_port": int(config.get("host_port") or allocate_boxlite_host_port()),
+        }
 
     def update_connect_info(self, record: dict, *, sandbox_name: str) -> dict:
         connect_info = dict(record.get("connect_info") or {})
         connect_info["name"] = sandbox_name
+        connect_info.setdefault(
+            "persistent_name",
+            str(record.get("sandbox_id") or sandbox_name).strip(),
+        )
+        return connect_info
+
+    def update_connect_info_after_boot(
+        self, record: dict, booter: ComputerBooter
+    ) -> dict | None:
+        host_port = getattr(booter, "host_port", None)
+        if not host_port:
+            return None
+        connect_info = dict(record.get("connect_info") or {})
+        connect_info["host_port"] = int(host_port)
         return connect_info
 
     def get_idle_timeout(self, context: Context, session_id: str) -> float:
         return 0.0
+
+    async def check_persistent_sandbox_exists(self, record: dict) -> bool:
+        connect_info = dict(record.get("connect_info") or {})
+        box_name = str(
+            connect_info.get("persistent_name")
+            or connect_info.get("name")
+            or record.get("sandbox_id")
+            or ""
+        ).strip()
+        if not box_name:
+            return False
+        runtime = boxlite_booter.boxlite.Boxlite.default()
+        return runtime.get_info(box_name) is not None
 
     async def create_booter(
         self, context: Context, session_id: str, sandbox_id: str, config: dict
     ) -> ComputerBooter:
         if self._boot_hook is not None:
             return await self._boot_hook(context, session_id, sandbox_id, config)
-        client = BoxliteBooter()
+        host_port = config.get("host_port")
+        if bool(config.get("resume", False)) and not host_port:
+            raise RuntimeError(
+                "Boxlite persistent sandbox cannot be resumed without a stored host_port"
+            )
+        client = BoxliteBooter(
+            persistent=True,
+            persistent_name=self._persistent_name(config, sandbox_id),
+            resume=bool(config.get("resume", False)),
+            sandbox_id=sandbox_id,
+            host_port=int(host_port) if host_port else None,
+        )
         await client.boot(uuid.uuid5(uuid.NAMESPACE_DNS, session_id).hex)
         return client
 
     async def destroy_booter(self, booter: ComputerBooter, record: dict) -> None:
+        destroy = getattr(booter, "destroy", None)
+        if callable(destroy):
+            await destroy()
+            return
         await booter.shutdown()

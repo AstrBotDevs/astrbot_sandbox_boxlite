@@ -1,5 +1,12 @@
+from __future__ import annotations
+
 import asyncio
 import random
+import shlex
+import signal
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from types import FrameType
 from typing import Any
 
 import aiohttp
@@ -15,14 +22,73 @@ from astrbot.core.computer.olayer import (
     PythonComponent,
     ShellComponent,
 )
-from data.plugins.astrbot_sandbox_shipyard.booters.shipyard import (
-    ShipyardFileSystemWrapper,
-)
+
+_HEALTH_PROBE_TIMEOUT = aiohttp.ClientTimeout(total=5)
+_HEALTH_PROBE_INTERVAL = 1
+_HEALTH_PROBE_MAX_ATTEMPTS = 60
+_MAX_SEARCH_LINE_COLUMNS = 1000
+BOXLITE_HOST_PORT_MIN = 20000
+BOXLITE_HOST_PORT_MAX = 30000
+SignalHandler = Callable[[int, FrameType | None], Any] | int | None
+
+
+def allocate_boxlite_host_port() -> int:
+    return random.randint(BOXLITE_HOST_PORT_MIN, BOXLITE_HOST_PORT_MAX)
+
+
+@contextmanager
+def capture_signal_handlers() -> Iterator[None]:
+    handlers: dict[int, SignalHandler] = {}
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        handlers[signum] = signal.getsignal(signum)
+    try:
+        yield
+    finally:
+        _restore_signal_handlers(handlers)
+
+
+def _restore_signal_handlers(handlers: dict[int, SignalHandler]) -> None:
+    for signum, handler in handlers.items():
+        try:
+            signal.signal(signum, handler)
+        except (OSError, ValueError):
+            # signal.signal() is only valid from the main thread.
+            logger.debug(
+                "Failed to restore BoxLite signal handler for signum=%s",
+                signum,
+                exc_info=True,
+            )
+
+
+class SandboxClientError(Exception):
+    """Raised when a sandbox HTTP operation returns a non-2xx status."""
+
+    def __init__(
+        self, message: str, *, status: int | None = None, body: str = ""
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.body = body
 
 
 class MockShipyardSandboxClient:
     def __init__(self, sb_url: str) -> None:
         self.sb_url = sb_url.rstrip("/")
+        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+        self._session: aiohttp.ClientSession | None = aiohttp.ClientSession(
+            connector=connector
+        )
+
+    @property
+    def _client(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            raise RuntimeError("Sandbox HTTP client session has been closed")
+        return self._session
+
+    async def close(self) -> None:
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+            self._session = None
 
     async def _exec_operation(
         self,
@@ -31,24 +97,25 @@ class MockShipyardSandboxClient:
         payload: dict[str, Any],
         session_id: str,
     ) -> dict[str, Any]:
-        async with aiohttp.ClientSession() as session:
-            headers = {"X-SESSION-ID": session_id}
-            async with session.post(
-                f"{self.sb_url}/{operation_type}",
-                json=payload,
-                headers=headers,
-            ) as response:
-                if response.status == 200:
-                    return await response.json()
-                else:
-                    error_text = await response.text()
-                    raise Exception(
-                        f"Failed to exec operation: {response.status} {error_text}"
-                    )
+        headers = {"X-SESSION-ID": session_id}
+        async with self._client.post(
+            f"{self.sb_url}/{operation_type}",
+            json=payload,
+            headers=headers,
+        ) as response:
+            if response.status == 200:
+                return await response.json()
+            else:
+                error_text = await response.text()
+                raise SandboxClientError(
+                    f"Failed to exec operation: {response.status} {error_text}",
+                    status=response.status,
+                    body=error_text,
+                )
 
     async def upload_file(self, path: str, remote_path: str) -> dict:
         """Upload a file to the sandbox"""
-        url = f"http://{self.sb_url}/upload"
+        url = f"{self.sb_url}/upload"
 
         try:
             # Read file content
@@ -67,25 +134,24 @@ class MockShipyardSandboxClient:
 
             timeout = aiohttp.ClientTimeout(total=120)  # 2 minutes for file upload
 
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, data=data) as response:
-                    if response.status == 200:
-                        logger.info(
-                            "[Computer] File uploaded to Boxlite sandbox: %s",
-                            remote_path,
-                        )
-                        return {
-                            "success": True,
-                            "message": "File uploaded successfully",
-                            "file_path": remote_path,
-                        }
-                    else:
-                        error_text = await response.text()
-                        return {
-                            "success": False,
-                            "error": f"Server returned {response.status}: {error_text}",
-                            "message": "File upload failed",
-                        }
+            async with self._client.post(url, data=data, timeout=timeout) as response:
+                if response.status == 200:
+                    logger.info(
+                        "[Computer] File uploaded to Boxlite sandbox: %s",
+                        remote_path,
+                    )
+                    return {
+                        "success": True,
+                        "message": "File uploaded successfully",
+                        "file_path": remote_path,
+                    }
+                else:
+                    error_text = await response.text()
+                    return {
+                        "success": False,
+                        "error": f"Server returned {response.status}: {error_text}",
+                        "message": "File upload failed",
+                    }
 
         except aiohttp.ClientError as e:
             logger.error(f"Failed to upload file: {e}")
@@ -115,97 +181,531 @@ class MockShipyardSandboxClient:
                 "message": "File upload failed",
             }
 
-    async def wait_healthy(self, ship_id: str, session_id: str) -> None:
-        """Mock wait healthy"""
-        timeout = 60
-        deadline = asyncio.get_running_loop().time() + timeout
-        last_error = ""
-        url = f"{self.sb_url}/health"
+    async def wait_healthy(
+        self,
+        ship_id: str,
+        *,
+        timeout: aiohttp.ClientTimeout | None = None,
+        interval: float | None = None,
+        max_attempts: int | None = None,
+    ) -> None:
+        """Wait until the sandbox health endpoint responds.
+
+        Args:
+            ship_id: Identifier used in log messages.
+            timeout: Per-request timeout for each probe. Defaults to
+                ``_HEALTH_PROBE_TIMEOUT``.
+            interval: Seconds to wait between probes. Defaults to
+                ``_HEALTH_PROBE_INTERVAL``.
+            max_attempts: Maximum probe attempts before giving up. Defaults to
+                ``_HEALTH_PROBE_MAX_ATTEMPTS``.
+        """
+        probe_timeout = timeout or _HEALTH_PROBE_TIMEOUT
+        probe_interval = interval if interval is not None else _HEALTH_PROBE_INTERVAL
+        probe_attempts = (
+            max_attempts if max_attempts is not None else _HEALTH_PROBE_MAX_ATTEMPTS
+        )
+
         logger.info(
             "[Computer] Waiting for Boxlite sandbox health: id=%s endpoint=%s",
             ship_id,
             self.sb_url,
         )
-        async with aiohttp.ClientSession() as session:
-            while asyncio.get_running_loop().time() < deadline:
-                try:
-                    async with session.get(url) as response:
-                        if response.status == 200:
-                            logger.info(
-                                "[Computer] Boxlite sandbox is healthy: id=%s",
-                                ship_id,
-                            )
-                            return
-                        last_error = f"HTTP {response.status}"
-                except Exception as exc:
-                    last_error = str(exc)
-                await asyncio.sleep(1)
-        raise TimeoutError(
-            f"Boxlite sandbox {ship_id} did not become healthy within {timeout}s"
-            f" (last error: {last_error})"
+        for attempt in range(probe_attempts):
+            if await self.healthy(timeout=probe_timeout):
+                logger.info("[Computer] Boxlite sandbox is healthy: id=%s", ship_id)
+                return
+            await asyncio.sleep(probe_interval)
+        raise RuntimeError(
+            f"Boxlite sandbox {ship_id} did not become healthy after "
+            f"{probe_attempts} attempts"
+        )
+
+    async def healthy(self, *, timeout: aiohttp.ClientTimeout | None = None) -> bool:
+        try:
+            async with self._client.get(
+                f"{self.sb_url}/health", timeout=timeout or _HEALTH_PROBE_TIMEOUT
+            ) as response:
+                return response.status == 200
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return False
+
+
+class BoxlitePythonWrapper(PythonComponent):
+    def __init__(self, python: ShipyardPythonComponent) -> None:
+        self._python = python
+
+    async def exec(
+        self,
+        code: str,
+        kernel_id: str | None = None,
+        timeout: int = 30,
+        silent: bool = False,
+    ) -> dict[str, Any]:
+        result = await self._python.exec(
+            code, kernel_id=kernel_id, timeout=timeout, silent=silent
+        )
+        return _normalize_python_result(result)
+
+
+class BoxliteShellWrapper(ShellComponent):
+    def __init__(self, shell: ShipyardShellComponent) -> None:
+        self._shell = shell
+
+    async def exec(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = 30,
+        shell: bool = True,
+        background: bool = False,
+    ) -> dict[str, Any]:
+        result = await self._shell.exec(
+            command,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            shell=shell,
+            background=background,
+        )
+        return _normalize_shell_result(result)
+
+
+def _normalize_python_result(result: dict[str, Any]) -> dict[str, Any]:
+    data = result.get("data")
+    payload = data if isinstance(data, dict) else result
+    output = payload.get("output", payload.get("stdout", ""))
+    error = payload.get("error", payload.get("stderr", "")) or ""
+    images: list[dict[str, Any]] = []
+
+    if isinstance(output, dict):
+        images_value = output.get("images", [])
+        if isinstance(images_value, list):
+            images = images_value
+        elif isinstance(images_value, Sequence) and not isinstance(
+            images_value, (str, bytes)
+        ):
+            images = list(images_value)
+        text = output.get("text", output.get("stdout", "")) or ""
+    else:
+        text = output or ""
+
+    return {"data": {"output": {"text": text, "images": images}, "error": error}}
+
+
+def _normalize_shell_result(result: dict[str, Any]) -> dict[str, Any]:
+    data = result.get("data")
+    payload = data if isinstance(data, dict) else result
+    stdout = payload.get("stdout", payload.get("output", "")) or ""
+    stderr = payload.get("stderr", payload.get("error", "")) or ""
+    exit_code = payload.get("exit_code", payload.get("returncode"))
+    if exit_code is None:
+        exit_code = 0 if not stderr else 1
+    return {
+        **payload,
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": exit_code,
+    }
+
+
+def _truncate_long_lines(text: str) -> str:
+    output_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        line_ending = ""
+        line_body = line
+        if line.endswith("\r\n"):
+            line_body = line[:-2]
+            line_ending = "\r\n"
+        elif line.endswith("\n") or line.endswith("\r"):
+            line_body = line[:-1]
+            line_ending = line[-1]
+
+        if len(line_body) > _MAX_SEARCH_LINE_COLUMNS:
+            line_body = line_body[:_MAX_SEARCH_LINE_COLUMNS]
+
+        output_lines.append(f"{line_body}{line_ending}")
+    return "".join(output_lines)
+
+
+def _build_rg_command(
+    *,
+    pattern: str,
+    path: str,
+    glob: str | None,
+    after_context: int | None,
+    before_context: int | None,
+) -> list[str]:
+    command = [
+        "rg",
+        "--color=never",
+        "-n",
+        "--max-columns",
+        str(_MAX_SEARCH_LINE_COLUMNS),
+        "-e",
+        pattern,
+    ]
+    if glob:
+        command.extend(["-g", glob])
+    if after_context is not None:
+        command.extend(["-A", str(after_context)])
+    if before_context is not None:
+        command.extend(["-B", str(before_context)])
+    command.extend(["--", path])
+    return command
+
+
+def _build_grep_command(
+    *,
+    pattern: str,
+    path: str,
+    glob: str | None,
+    after_context: int | None,
+    before_context: int | None,
+) -> list[str]:
+    command = ["grep", "-R", "-H", "-n", "-e", pattern]
+    if glob:
+        command.append(f"--include={glob}")
+    if after_context is not None:
+        command.extend(["-A", str(after_context)])
+    if before_context is not None:
+        command.extend(["-B", str(before_context)])
+    command.extend(["--", path])
+    return command
+
+
+def _quote_command(command: list[str]) -> str:
+    return " ".join(shlex.quote(part) for part in command)
+
+
+def build_search_command(
+    *,
+    pattern: str,
+    path: str,
+    glob: str | None,
+    after_context: int | None,
+    before_context: int | None,
+) -> str:
+    rg_command = _quote_command(
+        _build_rg_command(
+            pattern=pattern,
+            path=path,
+            glob=glob,
+            after_context=after_context,
+            before_context=before_context,
+        )
+    )
+    grep_command = _quote_command(
+        _build_grep_command(
+            pattern=pattern,
+            path=path,
+            glob=glob,
+            after_context=after_context,
+            before_context=before_context,
+        )
+    )
+    return (
+        "if command -v rg >/dev/null 2>&1; then "
+        f"{rg_command}; "
+        "elif command -v grep >/dev/null 2>&1; then "
+        f"{grep_command}; "
+        "else "
+        "echo 'Neither rg nor grep is available in the sandbox.' >&2; "
+        "exit 127; "
+        "fi"
+    )
+
+
+async def search_files_via_shell(
+    shell: ShellComponent,
+    *,
+    pattern: str,
+    path: str | None = None,
+    glob: str | None = None,
+    after_context: int | None = None,
+    before_context: int | None = None,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    command = build_search_command(
+        pattern=pattern,
+        path=path or ".",
+        glob=glob,
+        after_context=after_context,
+        before_context=before_context,
+    )
+    result = await shell.exec(command, timeout=timeout)
+    stdout = _truncate_long_lines(str(result.get("stdout", "") or ""))
+    stderr = str(result.get("stderr", "") or "")
+    exit_code = result.get("exit_code")
+    if exit_code in (0, None):
+        return {"success": True, "content": stdout}
+    if exit_code == 1:
+        return {"success": True, "content": ""}
+    return {
+        "success": False,
+        "content": "",
+        "error": stderr or f"command exited with code {exit_code}",
+        "exit_code": exit_code,
+    }
+
+
+class ShipyardFileSystemWrapper:
+    def __init__(
+        self, _shipyard_fs: ShipyardFileSystemComponent, _shipyard_shell: ShellComponent
+    ):
+        self._fs = _shipyard_fs
+        self._shell = _shipyard_shell
+
+    async def create_file(
+        self, path: str, content: str = "", mode: int = 420
+    ) -> dict[str, Any]:
+        return await self._fs.create_file(path=path, content=content, mode=mode)
+
+    async def read_file(
+        self,
+        path: str,
+        encoding: str = "utf-8",
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        return await self._fs.read_file(
+            path=path, encoding=encoding, offset=offset, limit=limit
+        )
+
+    async def write_file(
+        self, path: str, content: str, mode: str = "w", encoding: str = "utf-8"
+    ) -> dict[str, Any]:
+        return await self._fs.write_file(
+            path=path, content=content, mode=mode, encoding=encoding
+        )
+
+    async def list_dir(
+        self, path: str = ".", show_hidden: bool = False
+    ) -> dict[str, Any]:
+        return await self._fs.list_dir(path=path, show_hidden=show_hidden)
+
+    async def delete_file(self, path: str) -> dict[str, Any]:
+        return await self._fs.delete_file(path=path)
+
+    async def search_files(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        after_context: int | None = None,
+        before_context: int | None = None,
+    ) -> dict[str, Any]:
+        return await search_files_via_shell(
+            self._shell,
+            pattern=pattern,
+            path=path,
+            glob=glob,
+            after_context=after_context,
+            before_context=before_context,
+        )
+
+    async def edit_file(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+        encoding: str = "utf-8",
+    ) -> dict[str, Any]:
+        return await self._fs.edit_file(
+            path=path,
+            old_string=old_string,
+            new_string=new_string,
+            replace_all=replace_all,
+            encoding=encoding,
         )
 
 
 class BoxliteBooter(ComputerBooter):
+    def __init__(
+        self,
+        *,
+        persistent: bool = False,
+        persistent_name: str | None = None,
+        resume: bool = False,
+        sandbox_id: str | None = None,
+        host_port: int | None = None,
+    ) -> None:
+        self.persistent = persistent
+        self.persistent_name = persistent_name
+        self.resume = resume
+        self.sandbox_id = sandbox_id
+        self.host_port = host_port
+        self._sandbox_client: MockShipyardSandboxClient | None = None
+        self._python: BoxlitePythonWrapper | None = None
+        self._shell: ShipyardShellComponent | None = None
+        self._ship_fs: ShipyardFileSystemComponent | None = None
+        self._fs: ShipyardFileSystemWrapper | None = None
+        self.box: boxlite.SimpleBox | None = None
+
+    @property
+    def mocked(self) -> MockShipyardSandboxClient | None:
+        """Backward-compatible alias for _sandbox_client."""
+        return self._sandbox_client
+
+    @mocked.setter
+    def mocked(self, value: MockShipyardSandboxClient | None) -> None:
+        """Backward-compatible alias for _sandbox_client."""
+        self._sandbox_client = value
+
     async def boot(self, session_id: str) -> None:
         logger.info(
             f"Booting(Boxlite) for session: {session_id}, this may take a while..."
         )
-        random_port = random.randint(20000, 30000)
-        self.box = boxlite.SimpleBox(
-            image="soulter/shipyard-ship",
-            memory_mib=512,
-            cpus=1,
-            ports=[
-                {
-                    "host_port": random_port,
-                    "guest_port": 8123,
-                }
-            ],
-        )
-        await self.box.start()
-        logger.info(f"Boxlite booter started for session: {session_id}")
-        self.mocked = MockShipyardSandboxClient(
-            sb_url=f"http://127.0.0.1:{random_port}"
-        )
-        self._python = ShipyardPythonComponent(
-            client=self.mocked,  # type: ignore
-            ship_id=self.box.id,
-            session_id=session_id,
-        )
-        self._shell = ShipyardShellComponent(
-            client=self.mocked,  # type: ignore
-            ship_id=self.box.id,
-            session_id=session_id,
-        )
-        self._ship_fs = ShipyardFileSystemComponent(
-            client=self.mocked,  # type: ignore
-            ship_id=self.box.id,
-            session_id=session_id,
-        )
-        self._fs = ShipyardFileSystemWrapper(
-            _shipyard_fs=self._ship_fs, _shipyard_shell=self._shell
-        )
+        if self.resume and self.host_port is None:
+            raise RuntimeError(
+                "Boxlite persistent sandbox cannot be resumed without a stored host_port"
+            )
+        random_port = self.host_port or allocate_boxlite_host_port()
+        self.host_port = random_port
+        box_name = self.persistent_name if self.persistent else None
+        runtime = boxlite.Boxlite.default()
+        if self.resume and box_name and runtime.get_info(box_name) is None:
+            raise RuntimeError(
+                f"Boxlite persistent sandbox {box_name!r} could not be resumed"
+            )
+        try:
+            with capture_signal_handlers():
+                self.box = boxlite.SimpleBox(
+                    image="soulter/shipyard-ship",
+                    runtime=runtime,
+                    name=box_name,
+                    auto_remove=not self.persistent,
+                    reuse_existing=self.persistent,
+                    memory_mib=512,
+                    cpus=1,
+                    ports=[
+                        {
+                            "host_port": random_port,
+                            "guest_port": 8123,
+                        }
+                    ],
+                )
+                await self.box.start()
+            logger.info(f"Boxlite booter started for session: {session_id}")
+            self._sandbox_client = MockShipyardSandboxClient(
+                sb_url=f"http://127.0.0.1:{random_port}"
+            )
+            self._python = BoxlitePythonWrapper(
+                ShipyardPythonComponent(
+                    client=self._sandbox_client,  # type: ignore
+                    ship_id=self.box.id,
+                    session_id=session_id,
+                )
+            )
+            shipyard_shell = ShipyardShellComponent(
+                client=self._sandbox_client,  # type: ignore
+                ship_id=self.box.id,
+                session_id=session_id,
+            )
+            self._shell = BoxliteShellWrapper(shipyard_shell)
+            self._ship_fs = ShipyardFileSystemComponent(
+                client=self._sandbox_client,  # type: ignore
+                ship_id=self.box.id,
+                session_id=session_id,
+            )
+            self._fs = ShipyardFileSystemWrapper(
+                _shipyard_fs=self._ship_fs, _shipyard_shell=self._shell
+            )
 
-        await self.mocked.wait_healthy(self.box.id, session_id)
+            await self._sandbox_client.wait_healthy(self.box.id)
+        except Exception:
+            try:
+                await self._cleanup_failed_boot()
+            except Exception:
+                logger.warning(
+                    "Failed to cleanup Boxlite sandbox after boot error",
+                    exc_info=True,
+                )
+            raise
+
+    async def _cleanup_failed_boot(self) -> None:
+        await self._close_client()
+        if self.box is None:
+            return
+        try:
+            if self.persistent:
+                await self.box.__aexit__(None, None, None)
+            else:
+                await self.box.shutdown()
+        finally:
+            self.box = None
+
+    async def _close_client(self) -> None:
+        if self._sandbox_client is not None:
+            try:
+                await self._sandbox_client.close()
+            finally:
+                self._sandbox_client = None
+                self._python = None
+                self._shell = None
+                self._ship_fs = None
+                self._fs = None
 
     async def shutdown(self) -> None:
+        """Gracefully shut down the booter.
+
+        For persistent sandboxes this calls the box's async exit
+        hook so state can be preserved.  For temporary sandboxes
+        this performs a regular shutdown.
+        """
+        if self.box is None:
+            logger.warning("Boxlite booter shutdown called before boot")
+            return
         logger.info(f"Shutting down Boxlite booter for ship: {self.box.id}")
-        self.box.shutdown()
-        logger.info(f"Boxlite booter for ship: {self.box.id} stopped")
+        await self._close_client()
+        if self.persistent:
+            await self.box.__aexit__(None, None, None)
+        else:
+            await self.box.shutdown()
+        self.box = None
+        logger.info("Boxlite booter for ship stopped")
+
+    async def destroy(self) -> None:
+        """Forcefully destroy the booter without preserving state."""
+        if self.box is None:
+            logger.warning("Boxlite booter destroy called before boot")
+            return
+        logger.info(f"Destroying Boxlite booter for ship: {self.box.id}")
+        await self._close_client()
+        await self.box.shutdown()
+        self.box = None
+
+    async def available(self) -> bool:
+        if self.box is None:
+            return False
+        if self._sandbox_client is None:
+            return False
+        return await self._sandbox_client.healthy()
 
     @property
     def fs(self) -> FileSystemComponent:
+        if self._fs is None:
+            raise RuntimeError("Boxlite booter has not been booted")
         return self._fs
 
     @property
     def python(self) -> PythonComponent:
+        if self._python is None:
+            raise RuntimeError("Boxlite booter has not been booted")
         return self._python
 
     @property
     def shell(self) -> ShellComponent:
+        if self._shell is None:
+            raise RuntimeError("Boxlite booter has not been booted")
         return self._shell
 
     async def upload_file(self, path: str, file_name: str) -> dict:
         """Upload file to sandbox"""
-        return await self.mocked.upload_file(path, file_name)
+        if self.box is None:
+            raise RuntimeError("Boxlite booter has not been booted")
+        if self._sandbox_client is None:
+            raise RuntimeError("Boxlite booter has not been booted")
+        return await self._sandbox_client.upload_file(path, file_name)
