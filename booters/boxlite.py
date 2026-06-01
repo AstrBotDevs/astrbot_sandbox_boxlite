@@ -206,13 +206,20 @@ class MockShipyardSandboxClient:
             max_attempts if max_attempts is not None else _HEALTH_PROBE_MAX_ATTEMPTS
         )
 
+        logger.info(
+            "[Computer] Waiting for Boxlite sandbox health: id=%s endpoint=%s",
+            ship_id,
+            self.sb_url,
+        )
         for attempt in range(probe_attempts):
-            logger.info(f"Checking health for sandbox {ship_id} on {self.sb_url}...")
             if await self.healthy(timeout=probe_timeout):
-                logger.info(f"Sandbox {ship_id} is healthy")
+                logger.info("[Computer] Boxlite sandbox is healthy: id=%s", ship_id)
                 return
             await asyncio.sleep(probe_interval)
-        raise RuntimeError(f"Sandbox {ship_id} health check timed out")
+        raise RuntimeError(
+            f"Boxlite sandbox {ship_id} did not become healthy after "
+            f"{probe_attempts} attempts"
+        )
 
     async def healthy(self, *, timeout: aiohttp.ClientTimeout | None = None) -> bool:
         try:
