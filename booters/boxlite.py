@@ -729,9 +729,14 @@ class BoxliteBooter(ComputerBooter):
         target = Path(local_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
-            stdout_b64 = "".join(str(result.get("stdout", "")).split())
+            stdout = result.get("stdout", b"")
+            if isinstance(stdout, bytes):
+                stdout_text = stdout.decode("utf-8", errors="strict")
+            else:
+                stdout_text = stdout or ""
+            stdout_b64 = "".join(stdout_text.split())
             decoded_bytes = base64.b64decode(stdout_b64, validate=True)
-        except (binascii.Error, ValueError) as exc:
+        except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
             raise RuntimeError(
                 "Corrupt base64 data received from Boxlite sandbox while downloading "
                 f"{remote_path!r} to {local_path!r}"

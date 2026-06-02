@@ -665,6 +665,21 @@ async def test_boxlite_download_file_accepts_wrapped_base64_output(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_boxlite_download_file_accepts_bytes_base64_output(tmp_path):
+    class FakeShell:
+        async def exec(self, command):
+            return {"stdout": b"cGF5bG9hZA==", "stderr": "", "exit_code": 0}
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter._shell = FakeShell()
+    local_file = tmp_path / "payload.txt"
+
+    await booter.download_file("/tmp/payload.txt", str(local_file))
+
+    assert local_file.read_text(encoding="utf-8") == "payload"
+
+
+@pytest.mark.asyncio
 async def test_boxlite_download_file_raises_corrupt_base64_error(tmp_path):
     class FakeShell:
         async def exec(self, command):
@@ -675,6 +690,21 @@ async def test_boxlite_download_file_raises_corrupt_base64_error(tmp_path):
 
     with pytest.raises(RuntimeError, match="Corrupt base64 data"):
         await booter.download_file("/tmp/payload.txt", str(tmp_path / "payload.txt"))
+
+
+@pytest.mark.asyncio
+async def test_boxlite_download_file_allows_empty_stdout_for_empty_files(tmp_path):
+    class FakeShell:
+        async def exec(self, command):
+            return {"stdout": None, "stderr": "", "exit_code": 0}
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter._shell = FakeShell()
+    local_file = tmp_path / "empty.txt"
+
+    await booter.download_file("/tmp/empty.txt", str(local_file))
+
+    assert local_file.read_bytes() == b""
 
 
 @pytest.mark.asyncio
