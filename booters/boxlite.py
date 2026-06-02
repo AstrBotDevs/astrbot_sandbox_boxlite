@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import random
 import shlex
 import signal
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from pathlib import Path
 from types import FrameType
 from typing import Any
 
@@ -709,3 +712,38 @@ class BoxliteBooter(ComputerBooter):
         if self._sandbox_client is None:
             raise RuntimeError("Boxlite booter has not been booted")
         return await self._sandbox_client.upload_file(path, file_name)
+
+    async def download_file(self, remote_path: str, local_path: str) -> None:
+        """Download file from sandbox."""
+        if self._shell is None:
+            raise RuntimeError("Boxlite booter has not been booted")
+        result = await self._shell.exec(f"base64 {shlex.quote(remote_path)}")
+        if result.get("exit_code", 0) != 0 or result.get("stderr"):
+            error_message = result.get("stderr") or (
+                f"base64 failed with exit code {result.get('exit_code')}"
+            )
+            raise RuntimeError(
+                f"Failed to download {remote_path!r} from Boxlite sandbox: "
+                f"{error_message}"
+            )
+        target = Path(local_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            stdout = result.get("stdout", b"")
+            if isinstance(stdout, bytes):
+                stdout_text = stdout.decode("utf-8", errors="strict")
+            else:
+                stdout_text = stdout or ""
+            stdout_b64 = "".join(stdout_text.split())
+            decoded_bytes = base64.b64decode(stdout_b64, validate=True)
+        except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+            raise RuntimeError(
+                "Corrupt base64 data received from Boxlite sandbox while downloading "
+                f"{remote_path!r} to {local_path!r}"
+            ) from exc
+        target.write_bytes(decoded_bytes)
+        logger.info(
+            "[Computer] File downloaded from Boxlite sandbox: %s -> %s",
+            remote_path,
+            local_path,
+        )
