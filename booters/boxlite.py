@@ -42,9 +42,19 @@ def allocate_boxlite_host_port() -> int:
     return random.randint(BOXLITE_HOST_PORT_MIN, BOXLITE_HOST_PORT_MAX)
 
 
+def normalize_boxlite_network_allow(
+    allow_net: Sequence[str] | str | None,
+) -> list[str]:
+    if allow_net is None:
+        return list(DEFAULT_BOXLITE_NETWORK_ALLOW)
+    if isinstance(allow_net, str):
+        return [allow_net.strip()] if allow_net.strip() else []
+    return [str(item).strip() for item in allow_net if str(item).strip()]
+
+
 def build_boxlite_network_spec(
     mode: str | None = DEFAULT_BOXLITE_NETWORK_MODE,
-    allow_net: Sequence[str] | None = None,
+    allow_net: Sequence[str] | str | None = None,
 ) -> NetworkSpec | None:
     normalized_mode = (mode or "").strip().lower()
     if normalized_mode in {"", "default"}:
@@ -55,7 +65,7 @@ def build_boxlite_network_spec(
         )
     return NetworkSpec(
         normalized_mode,
-        allow_net=list(allow_net or DEFAULT_BOXLITE_NETWORK_ALLOW),
+        allow_net=normalize_boxlite_network_allow(allow_net),
     )
 
 
@@ -555,7 +565,7 @@ class BoxliteBooter(ComputerBooter):
         sandbox_id: str | None = None,
         host_port: int | None = None,
         network_mode: str | None = DEFAULT_BOXLITE_NETWORK_MODE,
-        network_allow: Sequence[str] | None = None,
+        network_allow: Sequence[str] | str | None = None,
     ) -> None:
         self.persistent = persistent
         self.persistent_name = persistent_name
@@ -563,7 +573,7 @@ class BoxliteBooter(ComputerBooter):
         self.sandbox_id = sandbox_id
         self.host_port = host_port
         self.network_mode = network_mode
-        self.network_allow = list(network_allow or DEFAULT_BOXLITE_NETWORK_ALLOW)
+        self.network_allow = normalize_boxlite_network_allow(network_allow)
         self._sandbox_client: MockShipyardSandboxClient | None = None
         self._python: BoxlitePythonWrapper | None = None
         self._shell: ShipyardShellComponent | None = None

@@ -165,6 +165,43 @@ def test_boxlite_provider_build_create_config_uses_network_config():
     assert config["network_allow"] == ["10.0.0.0/8", "1.1.1.1"]
 
 
+def test_boxlite_provider_network_config_falls_back_per_key():
+    provider = provider_module.BoxliteSandboxProvider(
+        plugin_config={"network_mode": "disabled", "network_allow": "10.0.0.0/8"}
+    )
+
+    info = provider.build_connect_info("Named", {"host_port": 23456})
+
+    assert info["network_mode"] == "disabled"
+    assert info["network_allow"] == ["10.0.0.0/8"]
+
+
+def test_boxlite_provider_network_allow_preserves_empty_list():
+    provider = provider_module.BoxliteSandboxProvider(
+        plugin_config={"network_allow": "10.0.0.0/8"}
+    )
+
+    info = provider.build_connect_info("Named", {"network_allow": []})
+
+    assert info["network_allow"] == []
+
+
+def test_boxlite_provider_update_connect_info_uses_record_config():
+    provider = provider_module.BoxliteSandboxProvider()
+
+    updated = provider.update_connect_info(
+        {
+            "sandbox_id": "boxlite-1",
+            "config": {"network_mode": "disabled", "network_allow": ["10.0.0.0/8"]},
+            "connect_info": {"name": "Legacy"},
+        },
+        sandbox_name="Renamed",
+    )
+
+    assert updated["network_mode"] == "disabled"
+    assert updated["network_allow"] == ["10.0.0.0/8"]
+
+
 @pytest.mark.asyncio
 async def test_boxlite_provider_strips_explicit_persistent_name(monkeypatch):
     recorded = {}
@@ -541,6 +578,23 @@ async def test_boxlite_booter_uses_configured_network(monkeypatch):
 
     assert recorded["network"].mode == "disabled"
     assert recorded["network"].allow_net == ["10.0.0.0/8"]
+
+
+def test_boxlite_network_spec_preserves_empty_allow_list():
+    spec = boxlite_booter.build_boxlite_network_spec("enabled", [])
+
+    assert spec is not None
+    assert spec.allow_net == []
+
+
+def test_boxlite_network_spec_treats_string_as_single_entry():
+    spec = boxlite_booter.build_boxlite_network_spec("enabled", "10.0.0.0/8")
+
+    booter = boxlite_booter.BoxliteBooter(network_allow="10.0.0.0/8")
+
+    assert spec is not None
+    assert spec.allow_net == ["10.0.0.0/8"]
+    assert booter.network_allow == ["10.0.0.0/8"]
 
 
 @pytest.mark.asyncio
