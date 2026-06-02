@@ -650,6 +650,34 @@ async def test_boxlite_download_file_quotes_remote_path(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_boxlite_download_file_accepts_wrapped_base64_output(tmp_path):
+    class FakeShell:
+        async def exec(self, command):
+            return {"stdout": "cGF5\nbG9hZA==\n", "stderr": "", "exit_code": 0}
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter._shell = FakeShell()
+    local_file = tmp_path / "payload.txt"
+
+    await booter.download_file("/tmp/payload.txt", str(local_file))
+
+    assert local_file.read_text(encoding="utf-8") == "payload"
+
+
+@pytest.mark.asyncio
+async def test_boxlite_download_file_raises_corrupt_base64_error(tmp_path):
+    class FakeShell:
+        async def exec(self, command):
+            return {"stdout": "not-base64!", "stderr": "", "exit_code": 0}
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter._shell = FakeShell()
+
+    with pytest.raises(RuntimeError, match="Corrupt base64 data"):
+        await booter.download_file("/tmp/payload.txt", str(tmp_path / "payload.txt"))
+
+
+@pytest.mark.asyncio
 async def test_boxlite_download_file_raises_shell_error(tmp_path):
     class FakeShell:
         async def exec(self, command):
@@ -658,7 +686,7 @@ async def test_boxlite_download_file_raises_shell_error(tmp_path):
     booter = boxlite_booter.BoxliteBooter()
     booter._shell = FakeShell()
 
-    with pytest.raises(RuntimeError, match="missing file"):
+    with pytest.raises(RuntimeError, match="/tmp/missing.txt.*missing file"):
         await booter.download_file("/tmp/missing.txt", str(tmp_path / "missing.txt"))
 
 
@@ -671,7 +699,9 @@ async def test_boxlite_download_file_raises_generic_exit_code_error(tmp_path):
     booter = boxlite_booter.BoxliteBooter()
     booter._shell = FakeShell()
 
-    with pytest.raises(RuntimeError, match="base64 failed with exit code 2"):
+    with pytest.raises(
+        RuntimeError, match="/tmp/missing.txt.*base64 failed with exit code 2"
+    ):
         await booter.download_file("/tmp/missing.txt", str(tmp_path / "missing.txt"))
 
 

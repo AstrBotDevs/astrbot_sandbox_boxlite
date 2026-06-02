@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import random
 import shlex
 import signal
@@ -718,13 +719,24 @@ class BoxliteBooter(ComputerBooter):
             raise RuntimeError("Boxlite booter has not been booted")
         result = await self._shell.exec(f"base64 {shlex.quote(remote_path)}")
         if result.get("exit_code", 0) != 0 or result.get("stderr"):
+            error_message = result.get("stderr") or (
+                f"base64 failed with exit code {result.get('exit_code')}"
+            )
             raise RuntimeError(
-                result.get("stderr")
-                or f"base64 failed with exit code {result.get('exit_code')}"
+                f"Failed to download {remote_path!r} from Boxlite sandbox: "
+                f"{error_message}"
             )
         target = Path(local_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(base64.b64decode(result.get("stdout", "")))
+        try:
+            stdout_b64 = "".join(str(result.get("stdout", "")).split())
+            decoded_bytes = base64.b64decode(stdout_b64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError(
+                "Corrupt base64 data received from Boxlite sandbox while downloading "
+                f"{remote_path!r} to {local_path!r}"
+            ) from exc
+        target.write_bytes(decoded_bytes)
         logger.info(
             "[Computer] File downloaded from Boxlite sandbox: %s -> %s",
             remote_path,
