@@ -1,3 +1,4 @@
+import shlex
 from types import SimpleNamespace
 
 import pytest
@@ -617,28 +618,60 @@ async def test_boxlite_download_file_uses_shell_base64(tmp_path):
     class FakeShell:
         async def exec(self, command):
             calls.append(command)
-            return {"stdout": "cGF5bG9hZA==", "stderr": ""}
+            return {"stdout": "cGF5bG9hZA==", "stderr": "", "exit_code": 0}
 
     booter = boxlite_booter.BoxliteBooter()
     booter._shell = FakeShell()
-    local_file = tmp_path / "payload.txt"
+    local_file = tmp_path / "nested" / "dir" / "payload.txt"
 
     await booter.download_file("/tmp/payload.txt", str(local_file))
 
     assert calls == ["base64 /tmp/payload.txt"]
+    assert local_file.exists()
     assert local_file.read_text(encoding="utf-8") == "payload"
+
+
+@pytest.mark.asyncio
+async def test_boxlite_download_file_quotes_remote_path(tmp_path):
+    calls = []
+
+    class FakeShell:
+        async def exec(self, command):
+            calls.append(command)
+            return {"stdout": "cGF5bG9hZA==", "stderr": "", "exit_code": 0}
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter._shell = FakeShell()
+    remote_path = "/tmp/my file;rm -rf /"
+
+    await booter.download_file(remote_path, str(tmp_path / "payload.txt"))
+
+    assert calls == [f"base64 {shlex.quote(remote_path)}"]
 
 
 @pytest.mark.asyncio
 async def test_boxlite_download_file_raises_shell_error(tmp_path):
     class FakeShell:
         async def exec(self, command):
-            return {"stdout": "", "stderr": "missing file"}
+            return {"stdout": "", "stderr": "missing file", "exit_code": 1}
 
     booter = boxlite_booter.BoxliteBooter()
     booter._shell = FakeShell()
 
     with pytest.raises(RuntimeError, match="missing file"):
+        await booter.download_file("/tmp/missing.txt", str(tmp_path / "missing.txt"))
+
+
+@pytest.mark.asyncio
+async def test_boxlite_download_file_raises_generic_exit_code_error(tmp_path):
+    class FakeShell:
+        async def exec(self, command):
+            return {"stdout": "", "stderr": "", "exit_code": 2}
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter._shell = FakeShell()
+
+    with pytest.raises(RuntimeError, match="base64 failed with exit code 2"):
         await booter.download_file("/tmp/missing.txt", str(tmp_path / "missing.txt"))
 
 

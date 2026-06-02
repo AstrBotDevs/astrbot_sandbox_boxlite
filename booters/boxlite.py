@@ -717,8 +717,11 @@ class BoxliteBooter(ComputerBooter):
         if self._shell is None:
             raise RuntimeError("Boxlite booter has not been booted")
         result = await self._shell.exec(f"base64 {shlex.quote(remote_path)}")
-        if result.get("stderr"):
-            raise RuntimeError(result["stderr"])
+        if result.get("exit_code", 0) != 0 or result.get("stderr"):
+            raise RuntimeError(
+                result.get("stderr")
+                or f"base64 failed with exit code {result.get('exit_code')}"
+            )
         target = Path(local_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(base64.b64decode(result.get("stdout", "")))
