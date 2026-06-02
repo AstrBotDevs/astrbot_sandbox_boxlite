@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import random
 import shlex
 import signal
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from pathlib import Path
 from types import FrameType
 from typing import Any
 
@@ -709,3 +711,19 @@ class BoxliteBooter(ComputerBooter):
         if self._sandbox_client is None:
             raise RuntimeError("Boxlite booter has not been booted")
         return await self._sandbox_client.upload_file(path, file_name)
+
+    async def download_file(self, remote_path: str, local_path: str) -> None:
+        """Download file from sandbox."""
+        if self._shell is None:
+            raise RuntimeError("Boxlite booter has not been booted")
+        result = await self._shell.exec(f"base64 {shlex.quote(remote_path)}")
+        if result.get("stderr"):
+            raise RuntimeError(result["stderr"])
+        target = Path(local_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(base64.b64decode(result.get("stdout", "")))
+        logger.info(
+            "[Computer] File downloaded from Boxlite sandbox: %s -> %s",
+            remote_path,
+            local_path,
+        )

@@ -611,6 +611,38 @@ async def test_boxlite_upload_file_uses_configured_base_url(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_boxlite_download_file_uses_shell_base64(tmp_path):
+    calls = []
+
+    class FakeShell:
+        async def exec(self, command):
+            calls.append(command)
+            return {"stdout": "cGF5bG9hZA==", "stderr": ""}
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter._shell = FakeShell()
+    local_file = tmp_path / "payload.txt"
+
+    await booter.download_file("/tmp/payload.txt", str(local_file))
+
+    assert calls == ["base64 /tmp/payload.txt"]
+    assert local_file.read_text(encoding="utf-8") == "payload"
+
+
+@pytest.mark.asyncio
+async def test_boxlite_download_file_raises_shell_error(tmp_path):
+    class FakeShell:
+        async def exec(self, command):
+            return {"stdout": "", "stderr": "missing file"}
+
+    booter = boxlite_booter.BoxliteBooter()
+    booter._shell = FakeShell()
+
+    with pytest.raises(RuntimeError, match="missing file"):
+        await booter.download_file("/tmp/missing.txt", str(tmp_path / "missing.txt"))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("raw_result", "expected_text", "expected_error"),
     [
