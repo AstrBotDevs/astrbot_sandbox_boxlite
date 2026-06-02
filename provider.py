@@ -9,7 +9,6 @@ from astrbot.core.star.context import Context
 
 from .booters import boxlite as boxlite_booter
 from .booters.boxlite import (
-    DEFAULT_BOXLITE_NETWORK_ALLOW,
     DEFAULT_BOXLITE_NETWORK_MODE,
     BoxliteBooter,
     allocate_boxlite_host_port,
@@ -76,26 +75,18 @@ class BoxliteSandboxProvider:
         connect_info.setdefault("network_allow", self._network_allow(config))
         return connect_info
 
-    def _network_config_value(self, config: Mapping[str, Any] | None, key: str) -> Any:
-        config = config or {}
-        if key in config:
-            return config[key]
-        return self.plugin_config.get(key)
-
     def _network_mode(self, config: Mapping[str, Any] | None = None) -> str:
-        mode = self._network_config_value(config, "network_mode")
+        config = config or {}
+        mode = config.get("network_mode", self.plugin_config.get("network_mode"))
         mode = str(mode or "").strip()
         return mode or DEFAULT_BOXLITE_NETWORK_MODE
 
     def _network_allow(self, config: Mapping[str, Any] | None = None) -> list[str]:
-        value = self._network_config_value(config, "network_allow")
-        if value is None:
-            return list(DEFAULT_BOXLITE_NETWORK_ALLOW)
+        config = config or {}
+        value = config.get("network_allow", self.plugin_config.get("network_allow"))
         if isinstance(value, str):
-            return normalize_boxlite_network_allow(value.split(","))
-        if isinstance(value, list | tuple | set):
-            return normalize_boxlite_network_allow(value)
-        return list(DEFAULT_BOXLITE_NETWORK_ALLOW)
+            value = value.split(",")
+        return normalize_boxlite_network_allow(value)
 
     def update_connect_info_after_boot(
         self, record: dict, booter: ComputerBooter

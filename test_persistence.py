@@ -594,7 +594,12 @@ def test_boxlite_network_spec_treats_string_as_single_entry():
 
     assert spec is not None
     assert spec.allow_net == ["10.0.0.0/8"]
-    assert booter.network_allow == ["10.0.0.0/8"]
+    booter_spec = boxlite_booter.build_boxlite_network_spec(
+        booter.network_mode,
+        booter.network_allow,
+    )
+    assert booter_spec is not None
+    assert booter_spec.allow_net == ["10.0.0.0/8"]
 
 
 @pytest.mark.asyncio

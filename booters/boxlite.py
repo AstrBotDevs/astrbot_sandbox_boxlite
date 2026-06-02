@@ -43,12 +43,14 @@ def allocate_boxlite_host_port() -> int:
 
 
 def normalize_boxlite_network_allow(
-    allow_net: Sequence[str] | str | None,
+    allow_net: Sequence[str] | str | set[Any] | None,
 ) -> list[str]:
     if allow_net is None:
         return list(DEFAULT_BOXLITE_NETWORK_ALLOW)
     if isinstance(allow_net, str):
         return [allow_net.strip()] if allow_net.strip() else []
+    if not isinstance(allow_net, (list, tuple, set)):
+        return list(DEFAULT_BOXLITE_NETWORK_ALLOW)
     return [str(item).strip() for item in allow_net if str(item).strip()]
 
 
@@ -573,7 +575,7 @@ class BoxliteBooter(ComputerBooter):
         self.sandbox_id = sandbox_id
         self.host_port = host_port
         self.network_mode = network_mode
-        self.network_allow = normalize_boxlite_network_allow(network_allow)
+        self.network_allow = network_allow
         self._sandbox_client: MockShipyardSandboxClient | None = None
         self._python: BoxlitePythonWrapper | None = None
         self._shell: ShipyardShellComponent | None = None
