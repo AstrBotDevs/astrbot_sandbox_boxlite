@@ -2,7 +2,6 @@ import shlex
 from types import SimpleNamespace
 
 import pytest
-
 from data.plugins.astrbot_sandbox_boxlite import main as plugin_main
 from data.plugins.astrbot_sandbox_boxlite import provider as provider_module
 from data.plugins.astrbot_sandbox_boxlite.booters import boxlite as boxlite_booter
@@ -38,6 +37,10 @@ def test_boxlite_provider_connect_info_preserves_configured_host_port():
 
 def test_boxlite_sandbox_provider_supports_persistent_reconnect():
     assert provider_module.BoxliteSandboxProvider.supports_persistent_reconnect is True
+
+
+def test_boxlite_sandbox_provider_disables_auto_skill_sync():
+    assert provider_module.BoxliteSandboxProvider.auto_sync_skills is False
 
 
 def test_boxlite_booter_can_import_without_shipyard_plugin(monkeypatch):
@@ -133,6 +136,8 @@ async def test_boxlite_provider_passes_persistent_reuse_flags(monkeypatch):
     assert recorded["resume"] is False
     assert recorded["sandbox_id"] == "boxlite-1"
     assert recorded["host_port"] == 23456
+    assert recorded["network_mode"] == "enabled"
+    assert recorded["network_allow"] == ["0.0.0.0/0", "::/0"]
     assert getattr(booter, "sandbox_id") == "boxlite-1"
 
 
@@ -142,6 +147,22 @@ def test_boxlite_provider_build_create_config_allocates_host_port():
     config = provider.build_create_config(SimpleNamespace(), "dashboard")
 
     assert 20000 <= config["host_port"] <= 30000
+    assert config["network_mode"] == "enabled"
+    assert config["network_allow"] == ["0.0.0.0/0", "::/0"]
+
+
+def test_boxlite_provider_build_create_config_uses_network_config():
+    provider = provider_module.BoxliteSandboxProvider(
+        plugin_config={
+            "network_mode": "disabled",
+            "network_allow": "10.0.0.0/8, 1.1.1.1",
+        }
+    )
+
+    config = provider.build_create_config(SimpleNamespace(), "dashboard")
+
+    assert config["network_mode"] == "disabled"
+    assert config["network_allow"] == ["10.0.0.0/8", "1.1.1.1"]
 
 
 @pytest.mark.asyncio
@@ -175,6 +196,8 @@ async def test_boxlite_provider_strips_explicit_persistent_name(monkeypatch):
     assert recorded["resume"] is True
     assert recorded["sandbox_id"] == "boxlite-1"
     assert recorded["host_port"] == 23456
+    assert recorded["network_mode"] == "enabled"
+    assert recorded["network_allow"] == ["0.0.0.0/0", "::/0"]
     assert getattr(booter, "sandbox_id") == "boxlite-1"
 
 
@@ -460,8 +483,64 @@ async def test_boxlite_booter_uses_configured_host_port(monkeypatch):
     await booter.boot("session-1")
 
     assert recorded["ports"] == [{"host_port": 23456, "guest_port": 8123}]
+    assert recorded["network"].mode == "enabled"
+    assert recorded["network"].allow_net == ["0.0.0.0/0", "::/0"]
     assert recorded["health_url"] == "http://127.0.0.1:23456"
     assert booter.host_port == 23456
+
+
+@pytest.mark.asyncio
+async def test_boxlite_booter_uses_configured_network(monkeypatch):
+    recorded = {}
+
+    class FakeRuntime:
+        def get_info(self, name):
+            return {"name": name}
+
+    class FakeSimpleBox:
+        id = "fake-box"
+
+        def __init__(self, **kwargs):
+            recorded.update(kwargs)
+
+        async def start(self):
+            return None
+
+    async def fake_wait_healthy(self, ship_id):
+        return None
+
+    monkeypatch.setattr(
+        boxlite_booter.boxlite,
+        "Boxlite",
+        SimpleNamespace(default=lambda: FakeRuntime()),
+    )
+    monkeypatch.setattr(boxlite_booter.boxlite, "SimpleBox", FakeSimpleBox)
+    monkeypatch.setattr(
+        boxlite_booter.MockShipyardSandboxClient,
+        "wait_healthy",
+        fake_wait_healthy,
+    )
+    monkeypatch.setattr(boxlite_booter, "ShipyardPythonComponent", lambda **_: object())
+    monkeypatch.setattr(boxlite_booter, "ShipyardShellComponent", lambda **_: object())
+    monkeypatch.setattr(
+        boxlite_booter, "ShipyardFileSystemComponent", lambda **_: object()
+    )
+    monkeypatch.setattr(
+        boxlite_booter, "ShipyardFileSystemWrapper", lambda **_: object()
+    )
+
+    booter = boxlite_booter.BoxliteBooter(
+        persistent=True,
+        persistent_name="boxlite-1",
+        host_port=23456,
+        network_mode="disabled",
+        network_allow=["10.0.0.0/8"],
+    )
+
+    await booter.boot("session-1")
+
+    assert recorded["network"].mode == "disabled"
+    assert recorded["network"].allow_net == ["10.0.0.0/8"]
 
 
 @pytest.mark.asyncio
