@@ -8,7 +8,12 @@ from astrbot.core.computer.booters.base import ComputerBooter
 from astrbot.core.star.context import Context
 
 from .booters import boxlite as boxlite_booter
-from .booters.boxlite import BoxliteBooter, allocate_boxlite_host_port
+from .booters.boxlite import (
+    DEFAULT_BOXLITE_NETWORK_MODE,
+    BoxliteBooter,
+    allocate_boxlite_host_port,
+    normalize_boxlite_network_allow,
+)
 
 BootHook = Callable[[Context, str, str, dict], Awaitable[ComputerBooter]]
 
@@ -17,6 +22,7 @@ class BoxliteSandboxProvider:
     provider_id = "boxlite"
     capabilities = {"shell", "python", "filesystem"}
     supports_persistent_reconnect = True
+    auto_sync_skills = False
     tool_names: set[str] = set()
 
     def __init__(
@@ -35,9 +41,17 @@ class BoxliteSandboxProvider:
         return str(config.get("persistent_name") or fallback).strip()
 
     def build_create_config(self, context: Context, session_id: str) -> dict:
-        return {"host_port": allocate_boxlite_host_port()}
+        network_mode = self._network_mode()
+        network_allow = self._network_allow()
+        return {
+            "host_port": allocate_boxlite_host_port(),
+            "network_mode": network_mode,
+            "network_allow": network_allow,
+        }
 
     def build_connect_info(self, sandbox_name: str, config: dict) -> dict:
+        network_mode = self._network_mode(config)
+        network_allow = self._network_allow(config)
         return {
             "name": sandbox_name,
             "persistent_name": self._persistent_name(
@@ -45,6 +59,8 @@ class BoxliteSandboxProvider:
                 str(config.get("sandbox_id") or sandbox_name),
             ),
             "host_port": int(config.get("host_port") or allocate_boxlite_host_port()),
+            "network_mode": network_mode,
+            "network_allow": network_allow,
         }
 
     def update_connect_info(self, record: dict, *, sandbox_name: str) -> dict:
@@ -54,7 +70,23 @@ class BoxliteSandboxProvider:
             "persistent_name",
             str(record.get("sandbox_id") or sandbox_name).strip(),
         )
+        config = record.get("config")
+        connect_info.setdefault("network_mode", self._network_mode(config))
+        connect_info.setdefault("network_allow", self._network_allow(config))
         return connect_info
+
+    def _network_mode(self, config: Mapping[str, Any] | None = None) -> str:
+        config = config or {}
+        mode = config.get("network_mode", self.plugin_config.get("network_mode"))
+        mode = str(mode or "").strip()
+        return mode or DEFAULT_BOXLITE_NETWORK_MODE
+
+    def _network_allow(self, config: Mapping[str, Any] | None = None) -> list[str]:
+        config = config or {}
+        value = config.get("network_allow", self.plugin_config.get("network_allow"))
+        if isinstance(value, str):
+            value = value.split(",")
+        return normalize_boxlite_network_allow(value)
 
     def update_connect_info_after_boot(
         self, record: dict, booter: ComputerBooter
@@ -92,12 +124,16 @@ class BoxliteSandboxProvider:
             raise RuntimeError(
                 "Boxlite persistent sandbox cannot be resumed without a stored host_port"
             )
+        network_mode = self._network_mode(config)
+        network_allow = self._network_allow(config)
         client = BoxliteBooter(
             persistent=True,
             persistent_name=self._persistent_name(config, sandbox_id),
             resume=bool(config.get("resume", False)),
             sandbox_id=sandbox_id,
             host_port=int(host_port) if host_port else None,
+            network_mode=network_mode,
+            network_allow=network_allow,
         )
         await client.boot(uuid.uuid5(uuid.NAMESPACE_DNS, session_id).hex)
         return client

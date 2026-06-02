@@ -14,6 +14,7 @@ from typing import Any
 
 import aiohttp
 import boxlite
+from boxlite.boxlite import NetworkSpec
 from shipyard import FileSystemComponent as ShipyardFileSystemComponent
 from shipyard.python import PythonComponent as ShipyardPythonComponent
 from shipyard.shell import ShellComponent as ShipyardShellComponent
@@ -32,11 +33,42 @@ _HEALTH_PROBE_MAX_ATTEMPTS = 60
 _MAX_SEARCH_LINE_COLUMNS = 1000
 BOXLITE_HOST_PORT_MIN = 20000
 BOXLITE_HOST_PORT_MAX = 30000
+DEFAULT_BOXLITE_NETWORK_MODE = "enabled"
+DEFAULT_BOXLITE_NETWORK_ALLOW = ["0.0.0.0/0", "::/0"]
 SignalHandler = Callable[[int, FrameType | None], Any] | int | None
 
 
 def allocate_boxlite_host_port() -> int:
     return random.randint(BOXLITE_HOST_PORT_MIN, BOXLITE_HOST_PORT_MAX)
+
+
+def normalize_boxlite_network_allow(
+    allow_net: Sequence[str] | str | set[Any] | None,
+) -> list[str]:
+    if allow_net is None:
+        return list(DEFAULT_BOXLITE_NETWORK_ALLOW)
+    if isinstance(allow_net, str):
+        return [allow_net.strip()] if allow_net.strip() else []
+    if not isinstance(allow_net, (list, tuple, set)):
+        return list(DEFAULT_BOXLITE_NETWORK_ALLOW)
+    return [str(item).strip() for item in allow_net if str(item).strip()]
+
+
+def build_boxlite_network_spec(
+    mode: str | None = DEFAULT_BOXLITE_NETWORK_MODE,
+    allow_net: Sequence[str] | str | None = None,
+) -> NetworkSpec | None:
+    normalized_mode = (mode or "").strip().lower()
+    if normalized_mode in {"", "default"}:
+        return None
+    if normalized_mode not in {"enabled", "disabled"}:
+        raise ValueError(
+            f"Invalid Boxlite network mode {mode!r}; expected 'enabled', 'disabled', or 'default'"
+        )
+    return NetworkSpec(
+        normalized_mode,
+        allow_net=normalize_boxlite_network_allow(allow_net),
+    )
 
 
 @contextmanager
@@ -534,12 +566,16 @@ class BoxliteBooter(ComputerBooter):
         resume: bool = False,
         sandbox_id: str | None = None,
         host_port: int | None = None,
+        network_mode: str | None = DEFAULT_BOXLITE_NETWORK_MODE,
+        network_allow: Sequence[str] | str | None = None,
     ) -> None:
         self.persistent = persistent
         self.persistent_name = persistent_name
         self.resume = resume
         self.sandbox_id = sandbox_id
         self.host_port = host_port
+        self.network_mode = network_mode
+        self.network_allow = network_allow
         self._sandbox_client: MockShipyardSandboxClient | None = None
         self._python: BoxlitePythonWrapper | None = None
         self._shell: ShipyardShellComponent | None = None
@@ -573,6 +609,10 @@ class BoxliteBooter(ComputerBooter):
             raise RuntimeError(
                 f"Boxlite persistent sandbox {box_name!r} could not be resumed"
             )
+        network_spec = build_boxlite_network_spec(
+            self.network_mode,
+            self.network_allow,
+        )
         try:
             with capture_signal_handlers():
                 self.box = boxlite.SimpleBox(
@@ -583,6 +623,7 @@ class BoxliteBooter(ComputerBooter):
                     reuse_existing=self.persistent,
                     memory_mib=512,
                     cpus=1,
+                    network=network_spec,
                     ports=[
                         {
                             "host_port": random_port,
